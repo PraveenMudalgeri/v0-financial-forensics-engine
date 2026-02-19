@@ -90,10 +90,7 @@ export function NetworkGraph({
   const getFilteredElements = useCallback(
     (filter: PatternFilter) => {
       if (filter === 'all') {
-        return {
-          nodes: graphData.nodes,
-          edges: graphData.edges,
-        };
+        return { nodes: graphData.nodes, edges: graphData.edges };
       }
 
       if (filter === 'suspicious') {
@@ -108,12 +105,9 @@ export function NetworkGraph({
       }
 
       // Filter by pattern type - find nodes involved in this pattern via edges
-      console.log('[v0] Filtering by pattern:', filter);
-      console.log('[v0] Sample edge pattern_types:', graphData.edges[0]?.data.pattern_types);
       const relevantEdges = graphData.edges.filter((e) =>
-        e.data.pattern_types.includes(filter)
+        e.data.pattern_types?.includes(filter)
       );
-      console.log('[v0] Found relevant edges:', relevantEdges.length);
       const nodeIds = new Set<string>();
       relevantEdges.forEach((e) => {
         nodeIds.add(e.data.source);
@@ -122,7 +116,6 @@ export function NetworkGraph({
       const patternNodes = graphData.nodes.filter((n) =>
         nodeIds.has(n.data.id)
       );
-      console.log('[v0] Found pattern nodes:', patternNodes.length);
       return { nodes: patternNodes, edges: relevantEdges };
     },
     [graphData]
@@ -177,6 +170,20 @@ export function NetworkGraph({
 
   const initCytoscape = useCallback(async () => {
     if (!containerRef.current) {
+      return;
+    }
+
+    const cytoscape = (await import('cytoscape')).default;
+
+    if (cyRef.current) {
+      cyRef.current.destroy();
+    }
+
+    const { nodes: filteredNodes, edges: filteredEdges } =
+      getFilteredElements(patternFilter);
+
+    if (filteredNodes.length === 0) {
+      cyRef.current = null;
       return;
     }
 
