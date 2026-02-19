@@ -563,16 +563,14 @@ function detectMuleCommunities(
     mergedRingMap.set(ringId, Array.from(subsumedRingIds));
 
     // ── Step 5: Compute community risk score ───────────────────────────
-    const fanPatternCount = fanInCount + fanOutCount;
-    const maxScore = Math.max(
-      ...component.map(id => accountMap.get(id)?.suspicion_score ?? 0)
-    );
+    // Deterministic formula: min(100, round(avg(member_scores) + log2(member_count + 1) * 10))
+    const avgMemberScore = component.reduce(
+      (sum, id) => sum + (accountMap.get(id)?.suspicion_score ?? 0),
+      0
+    ) / component.length;
     const riskScore = Math.min(
       100,
-      maxScore
-        + 10 * cycleCount
-        + 8 * fanPatternCount
-        + 6 * shellChainCount,
+      Math.round(avgMemberScore + Math.log2(component.length + 1) * 10),
     );
 
     // Total value of internal transactions
@@ -712,30 +710,90 @@ function buildFraudRings(
     });
   }
 
-  // Shell chain rings (deduplicate by unique sets of nodes)
-  const seenShellSets = new Set<string>();
-  for (const chain of shellChains) {
-    const key = [...chain].sort().join(',');
-    if (seenShellSets.has(key)) continue;
-    seenShellSets.add(key);
+  // Shell chain rings — collapse to at most ONE ring per connected component.
+  // For each connected component of shell-chain nodes, retain ONLY the longest
+  // detected path (maximum unique nodes).  Discard all shorter paths that are
+  // strict subsets or rotations (sorted node-set signature equality).
+  {
+    // Step 1: Deduplicate raw chains by sorted node-set signature
+    const uniqueChains: string[][] = [];
+    const seenSigs = new Set<string>();
+    for (const chain of shellChains) {
+      const sig = [...new Set(chain)].sort().join(',');
+      if (seenSigs.has(sig)) continue;
+      seenSigs.add(sig);
+      uniqueChains.push(chain);
+    }
 
-    ringCounter++;
-    const ringId = `RING_${String(ringCounter).padStart(3, '0')}`;
-    const avgScore =
-      chain.reduce(
-        (sum, id) => sum + (accountMap.get(id)?.suspicion_score || 0),
-        0
-      ) / chain.length;
+    // Step 2: Build undirected adjacency across ALL shell-chain nodes
+    const shellAdj = new Map<string, Set<string>>();
+    for (const chain of uniqueChains) {
+      for (const node of chain) {
+        if (!shellAdj.has(node)) shellAdj.set(node, new Set());
+      }
+      for (let i = 0; i < chain.length - 1; i++) {
+        shellAdj.get(chain[i])!.add(chain[i + 1]);
+        shellAdj.get(chain[i + 1])!.add(chain[i]);
+      }
+    }
 
-    rings.push({
-      ring_id: ringId,
-      pattern_type: 'shell_chain',
-      members: chain,
-      member_count: chain.length,
-      risk_score: Math.round(avgScore),
-      total_value: 0,
-      explanation: `Shell chain: ${chain.join(' -> ')}. Intermediate nodes have <= 3 total transactions.`,
-    });
+    // Step 3: Find connected components via BFS
+    const shellVisited = new Set<string>();
+    const shellComponents: Set<string>[] = [];
+    for (const node of shellAdj.keys()) {
+      if (shellVisited.has(node)) continue;
+      const comp = new Set<string>();
+      const queue = [node];
+      shellVisited.add(node);
+      while (queue.length > 0) {
+        const cur = queue.shift()!;
+        comp.add(cur);
+        for (const nb of shellAdj.get(cur) || []) {
+          if (!shellVisited.has(nb)) {
+            shellVisited.add(nb);
+            queue.push(nb);
+          }
+        }
+      }
+      shellComponents.push(comp);
+    }
+
+    // Step 4: For each component, pick the longest chain whose nodes
+    //         fall within that component.  One ring per component.
+    for (const comp of shellComponents) {
+      // Collect all chains that belong to this component
+      const chainsInComp = uniqueChains.filter(c => c.some(n => comp.has(n)));
+      if (chainsInComp.length === 0) continue;
+
+      // Pick the chain with the most unique nodes (longest path)
+      let best = chainsInComp[0];
+      let bestUniqueCount = new Set(best).size;
+      for (let i = 1; i < chainsInComp.length; i++) {
+        const uCount = new Set(chainsInComp[i]).size;
+        if (uCount > bestUniqueCount) {
+          best = chainsInComp[i];
+          bestUniqueCount = uCount;
+        }
+      }
+
+      ringCounter++;
+      const ringId = `RING_${String(ringCounter).padStart(3, '0')}`;
+      const avgScore =
+        best.reduce(
+          (sum, id) => sum + (accountMap.get(id)?.suspicion_score || 0),
+          0
+        ) / best.length;
+
+      rings.push({
+        ring_id: ringId,
+        pattern_type: 'shell_chain',
+        members: best,
+        member_count: best.length,
+        risk_score: Math.round(avgScore),
+        total_value: 0,
+        explanation: `Shell chain: ${best.join(' -> ')}. Intermediate nodes have <= 3 total transactions.`,
+      });
+    }
   }
 
   // Sort by risk_score descending
