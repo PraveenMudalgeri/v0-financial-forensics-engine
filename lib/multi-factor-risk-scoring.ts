@@ -294,7 +294,7 @@ function calculateNetworkRisk(
         type: 'network',
         factor: 'high_betweenness',
         score: 0.35,
-        explanation: `Acts as bridge between ${centrality.betweenness Centrality.toFixed(1)} different transaction paths (layering coordinator)`,
+        explanation: `Acts as bridge between ${centrality.betweennessCentrality.toFixed(1)} different transaction paths (layering coordinator)`,
         algorithmSource: 'Betweenness Centrality'
       });
     }
