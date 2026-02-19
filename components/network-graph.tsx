@@ -56,12 +56,12 @@ function getNodeColor(patterns: string[]): string {
 }
 
 function getEdgeColor(patternTypes: string[]): string {
-  if (patternTypes.length === 0) return 'rgba(99, 102, 241, 0.3)';
+  if (patternTypes.length === 0) return '#6366f1';
   const priority = ['cycle', 'shell_chain', 'fan_in', 'fan_out'];
   for (const p of priority) {
-    if (patternTypes.includes(p)) return PATTERN_COLORS[p] + 'aa';
+    if (patternTypes.includes(p)) return PATTERN_COLORS[p];
   }
-  return 'rgba(239, 68, 68, 0.5)';
+  return '#ef4444';
 }
 
 export function NetworkGraph({
@@ -108,9 +108,12 @@ export function NetworkGraph({
       }
 
       // Filter by pattern type - find nodes involved in this pattern via edges
+      console.log('[v0] Filtering by pattern:', filter);
+      console.log('[v0] Sample edge pattern_types:', graphData.edges[0]?.data.pattern_types);
       const relevantEdges = graphData.edges.filter((e) =>
         e.data.pattern_types.includes(filter)
       );
+      console.log('[v0] Found relevant edges:', relevantEdges.length);
       const nodeIds = new Set<string>();
       relevantEdges.forEach((e) => {
         nodeIds.add(e.data.source);
@@ -119,6 +122,7 @@ export function NetworkGraph({
       const patternNodes = graphData.nodes.filter((n) =>
         nodeIds.has(n.data.id)
       );
+      console.log('[v0] Found pattern nodes:', patternNodes.length);
       return { nodes: patternNodes, edges: relevantEdges };
     },
     [graphData]
@@ -278,6 +282,7 @@ export function NetworkGraph({
             'target-arrow-shape': 'triangle',
             'curve-style': 'bezier',
             'arrow-scale': 0.7,
+            opacity: 0.6,
             label: '',
             'font-size': '7px',
             color: '#94a3b8',
