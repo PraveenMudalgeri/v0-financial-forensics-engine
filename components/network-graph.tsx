@@ -87,6 +87,13 @@ export function NetworkGraph({
   // TASK 8: Performance safeguard
   const isLargeGraph = graphData.nodes.length > 300;
 
+  console.log('[v0] NetworkGraph rendered with:', {
+    nodesCount: graphData?.nodes?.length,
+    edgesCount: graphData?.edges?.length,
+    patternFilter,
+    containerRefExists: !!containerRef.current,
+  });
+
   const getFilteredElements = useCallback(
     (filter: PatternFilter) => {
       if (filter === 'all') {
@@ -171,18 +178,35 @@ export function NetworkGraph({
   );
 
   const initCytoscape = useCallback(async () => {
-    if (!containerRef.current) return;
+    console.log('[v0] initCytoscape called:', {
+      containerRefExists: !!containerRef.current,
+      patternFilter,
+    });
+
+    if (!containerRef.current) {
+      console.log('[v0] No container ref, skipping init');
+      return;
+    }
 
     const cytoscape = (await import('cytoscape')).default;
+    console.log('[v0] Cytoscape library loaded');
 
     if (cyRef.current) {
+      console.log('[v0] Destroying existing Cytoscape instance');
       cyRef.current.destroy();
     }
 
     const { nodes: filteredNodes, edges: filteredEdges } =
       getFilteredElements(patternFilter);
 
+    console.log('[v0] Filtered elements:', {
+      nodesCount: filteredNodes.length,
+      edgesCount: filteredEdges.length,
+      sampleNode: filteredNodes[0]?.data,
+    });
+
     if (filteredNodes.length === 0) {
+      console.log('[v0] No filtered nodes, skipping render');
       cyRef.current = null;
       return;
     }
@@ -236,6 +260,11 @@ export function NetworkGraph({
       patternFilter,
       filteredNodes.length
     );
+
+    console.log('[v0] Creating Cytoscape instance with:', {
+      elementsCount: elements.length,
+      layoutName: layoutConfig.name,
+    });
 
     const cy = cytoscape({
       container: containerRef.current,
@@ -449,6 +478,11 @@ export function NetworkGraph({
     });
 
     cyRef.current = cy;
+    console.log('[v0] Cytoscape initialized successfully:', {
+      nodeCount: cy.nodes().length,
+      edgeCount: cy.edges().length,
+      zoom: cy.zoom(),
+    });
   }, [
     graphData,
     patternFilter,
