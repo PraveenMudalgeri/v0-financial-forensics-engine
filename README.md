@@ -2,7 +2,7 @@
 
 > **RIFT 2026 Hackathon** — Graph-based money laundering detection system that identifies suspicious transaction patterns, fraud rings, and mule networks from raw financial CSV data.
 
-**Team:** NOCTABYTE'S
+**Team:** NOCTABYTE'S 
 
 **Live Demo:** [https://money-muling-detection.vercel.app/](https://money-muling-detection.vercel.app/)
 
