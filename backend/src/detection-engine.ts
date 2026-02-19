@@ -15,6 +15,9 @@ import {
   PatternScores,
 } from './types';
 import { adjustScoresUsingRelationshipIntelligence } from './relationship-intelligence';
+import { validateTemporalCycles } from './temporal-cycle-validation';
+import { analyzeRingLeadership } from './centrality-analysis';
+import { detectMultiStageFlows } from './multi-stage-flow-analysis';
 
 // ─── ADJACENCY LIST GRAPH ────────────────────────────────────────────────────
 // Using adjacency list for O(V+E) traversal, optimal for sparse financial graphs
@@ -764,6 +767,33 @@ export function analyzeTransactions(
     Array.from(accountMap.values()),
     transactions,
     cycleMembers,
+  );
+
+  // ── Temporal Cycle Validation ──────────────────────────────────────────
+  // Verify chronological ordering and amount continuity for cycle-type
+  // rings.  Invalid cycles are removed and member scores adjusted.
+  validateTemporalCycles(
+    Array.from(accountMap.values()),
+    fraudRings,
+    cycles,
+    transactions,
+  );
+
+  // ── Ring Leadership Detection (Betweenness Centrality) ─────────────────
+  // Assigns ORCHESTRATOR / INTERMEDIARY / PERIPHERAL roles within each
+  // remaining fraud ring.  Orchestrators receive a +10 score boost.
+  analyzeRingLeadership(
+    Array.from(accountMap.values()),
+    fraudRings,
+    transactions,
+  );
+
+  // ── Multi-Stage Laundering Flow Detection ──────────────────────────────
+  // Flags accounts that span ≥2 distinct pattern types with +20 boost.
+  detectMultiStageFlows(
+    Array.from(accountMap.values()),
+    fraudRings,
+    transactions,
   );
 
   // Build Cytoscape data with detection results

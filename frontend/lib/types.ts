@@ -21,6 +21,9 @@ export interface RawTransaction {
   timestamp: string; // YYYY-MM-DD HH:MM:SS
 }
 
+// Role assigned by centrality analysis within fraud rings
+export type RingRole = 'ORCHESTRATOR' | 'INTERMEDIARY' | 'PERIPHERAL';
+
 export interface AccountNode {
   account_id: string;
   total_transactions: number;
@@ -35,6 +38,14 @@ export interface AccountNode {
   triggered_algorithms: string[];
   explanation: string;
   is_suspicious: boolean;
+
+  // Ring Leadership Detection
+  centrality_score?: number;
+  ring_role?: RingRole;
+
+  // Multi-Stage Laundering Flow Detection
+  laundering_stage?: string;
+  flow_pattern?: string[];
 }
 
 export interface FraudRing {
