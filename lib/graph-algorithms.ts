@@ -59,11 +59,30 @@ export function detectRings(
               // Calculate suspicion score based on velocity and pattern
               const suspicionScore = calculateRingSuspicion(ring, ringTxs, accounts);
 
+              const riskFactors: string[] = [];
+              if (avgTimeGap < 24) riskFactors.push('rapid_movement');
+              if (avgTimeGap < 1) riskFactors.push('extreme_velocity');
+              
+              const amounts = ringTxs.map(tx => tx.amount);
+              const avgAmount = amounts.reduce((a, b) => a + b, 0) / amounts.length;
+              const variance = amounts.reduce((sum, amt) => sum + Math.pow(amt - avgAmount, 2), 0) / amounts.length;
+              const stdDev = Math.sqrt(variance);
+              const cv = stdDev / avgAmount;
+              if (cv < 0.1) riskFactors.push('similar_amounts');
+
+              const roundAmounts = amounts.filter((amt) => amt % 1000 === 0 || amt % 500 === 0);
+              if (roundAmounts.length / amounts.length > 0.7) riskFactors.push('structuring');
+
+              const explanation = `Ring of ${ring.length} accounts with ${riskFactors.join(', ')}. Average time between transactions: ${avgTimeGap.toFixed(1)}h. Total value: $${totalValue.toLocaleString()}.`;
+
               rings.push({
                 nodes: ring,
                 totalValue,
                 suspicionScore,
                 avgTimeGap,
+                detectionAlgorithm: 'DFS Cycle Detection (Johnson\'s Algorithm variant)',
+                explanation,
+                riskFactors,
               });
             }
           }
@@ -158,6 +177,8 @@ export function analyzePaths(
         );
 
         if (suspicionScore > 0.5) {
+          const explanation = `Money movement through ${mule.id} (pass-through: ${((outTx.amount / inTx.amount) * 100).toFixed(0)}%). Turnaround time: ${(timeSpan / (1000 * 60 * 60)).toFixed(1)}h. Layering depth: 2 hops.`;
+          
           paths.push({
             path,
             totalValue,
@@ -165,6 +186,8 @@ export function analyzePaths(
             avgTransactionAmount: totalValue / 2,
             timeSpan: timeSpan / (1000 * 60 * 60), // hours
             suspicionScore,
+            explanation,
+            layeringDepth: 2,
           });
         }
       });

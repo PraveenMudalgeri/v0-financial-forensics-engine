@@ -8,6 +8,8 @@ export interface Transaction {
   timestamp: string;
   currency: string;
   description?: string;
+  frequency?: number; // Transaction frequency on this edge
+  temporalCluster?: number; // Which time window cluster
 }
 
 export interface Account {
@@ -19,11 +21,33 @@ export interface Account {
   totalIn: number;
   totalOut: number;
   transactionCount: number;
+  // Property Graph Attributes
+  totalAmountSent: number;
+  totalAmountReceived: number;
+  firstSeenTimestamp?: string;
+  lastSeenTimestamp?: string;
+  // Advanced Analytics
+  degreeCentrality?: number;
+  betweennessCentrality?: number;
+  pageRank?: number;
+  communityId?: number;
+  // Pattern Detection
+  isLegitimatePattern?: 'merchant' | 'payroll' | null;
+  // Explainability
+  riskFactors?: RiskFactor[];
   metadata?: {
     createdAt?: string;
     country?: string;
     kycStatus?: string;
   };
+}
+
+export interface RiskFactor {
+  type: 'structural' | 'behavioral' | 'network' | 'temporal';
+  factor: string;
+  score: number;
+  explanation: string;
+  algorithmSource: string;
 }
 
 export interface NetworkNode extends Account {
@@ -47,6 +71,9 @@ export interface RingStructure {
   totalValue: number;
   suspicionScore: number;
   avgTimeGap: number;
+  detectionAlgorithm: string;
+  explanation: string;
+  riskFactors: string[];
 }
 
 export interface PathAnalysis {
@@ -56,6 +83,36 @@ export interface PathAnalysis {
   avgTransactionAmount: number;
   timeSpan: number;
   suspicionScore: number;
+  explanation: string;
+  layeringDepth?: number;
+}
+
+export interface Community {
+  id: number;
+  nodes: string[];
+  internalDensity: number;
+  externalConnections: number;
+  totalValue: number;
+  suspicionScore: number;
+  avgRiskScore: number;
+  explanation: string;
+}
+
+export interface CentralityMetrics {
+  accountId: string;
+  degreeCentrality: number;
+  betweennessCentrality: number;
+  pageRank: number;
+  role: 'aggregator' | 'broker' | 'coordinator' | 'normal';
+  explanation: string;
+}
+
+export interface TemporalPattern {
+  accountId: string;
+  pattern: 'velocity_spike' | 'dormancy_activation' | 'burst_activity' | 'steady';
+  transactionsIn72h: number;
+  avgDailyRate: number;
+  suspicionScore: number;
 }
 
 export interface AnalysisResult {
@@ -63,6 +120,9 @@ export interface AnalysisResult {
   transactions: Transaction[];
   rings: RingStructure[];
   suspiciousPaths: PathAnalysis[];
+  communities: Community[];
+  centralityMetrics: CentralityMetrics[];
+  temporalPatterns: TemporalPattern[];
   networkMetrics: {
     totalAccounts: number;
     totalTransactions: number;
@@ -70,6 +130,15 @@ export interface AnalysisResult {
     avgRiskScore: number;
     highRiskAccounts: number;
     detectedMules: number;
+    communityCount: number;
+    isolatedAccounts: number;
+  };
+  scalabilityInfo: {
+    graphStructure: 'adjacency_list';
+    nodeCount: number;
+    edgeCount: number;
+    avgComplexity: string;
+    recommendedApproach: string;
   };
 }
 
