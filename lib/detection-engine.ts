@@ -9,6 +9,8 @@ import {
   AnalysisResult,
   HackathonOutput,
   CytoscapeGraphData,
+  FanInTransaction,
+  ShellChainPath,
 } from './types';
 
 // ─── ADJACENCY LIST GRAPH ────────────────────────────────────────────────────
@@ -497,8 +499,77 @@ function buildFraudRings(
 
 function buildCytoscapeData(
   accountMap: Map<string, AccountNode>,
-  transactions: RawTransaction[]
+  transactions: RawTransaction[],
+  fanInMap: Map<string, { senders: Set<string>; windowStart: string; windowEnd: string }>,
+  fanOutMap: Map<string, { receivers: Set<string>; windowStart: string; windowEnd: string }>,
+  shellChains: string[][],
+  cycles: string[][],
+  ringMap: Map<string, string[]>
 ): CytoscapeGraphData {
+  // Build per-node fan-in transactions (latest 10)
+  const nodeFanInTxs = new Map<string, FanInTransaction[]>();
+  for (const [receiver, data] of fanInMap) {
+    const relevant = transactions
+      .filter(tx => tx.receiver_id === receiver && data.senders.has(tx.sender_id))
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+      .slice(0, 10)
+      .map(tx => ({
+        sender_id: tx.sender_id,
+        receiver_id: tx.receiver_id,
+        amount: tx.amount,
+        timestamp: tx.timestamp,
+      }));
+    nodeFanInTxs.set(receiver, relevant);
+  }
+
+  // Build per-node shell chain paths
+  const nodeShellPaths = new Map<string, ShellChainPath[]>();
+  for (const chain of shellChains) {
+    const hops: ShellChainPath['hops'] = [];
+    for (let i = 0; i < chain.length - 1; i++) {
+      const hop = transactions.find(
+        tx => tx.sender_id === chain[i] && tx.receiver_id === chain[i + 1]
+      );
+      hops.push({
+        from: chain[i],
+        to: chain[i + 1],
+        amount: hop?.amount ?? 0,
+        timestamp: hop?.timestamp ?? '',
+      });
+    }
+    const shellPath: ShellChainPath = { path: chain, hops };
+    for (const nodeId of chain) {
+      if (!nodeShellPaths.has(nodeId)) nodeShellPaths.set(nodeId, []);
+      nodeShellPaths.get(nodeId)!.push(shellPath);
+    }
+  }
+
+  // Build pattern membership for edges
+  const cycleEdges = new Set<string>();
+  for (const cycle of cycles) {
+    for (let i = 0; i < cycle.length; i++) {
+      cycleEdges.add(`${cycle[i]}->${cycle[(i + 1) % cycle.length]}`);
+    }
+  }
+  const fanInEdges = new Set<string>();
+  for (const [receiver, data] of fanInMap) {
+    for (const sender of data.senders) {
+      fanInEdges.add(`${sender}->${receiver}`);
+    }
+  }
+  const fanOutEdges = new Set<string>();
+  for (const [sender, data] of fanOutMap) {
+    for (const receiver of data.receivers) {
+      fanOutEdges.add(`${sender}->${receiver}`);
+    }
+  }
+  const shellEdges = new Set<string>();
+  for (const chain of shellChains) {
+    for (let i = 0; i < chain.length - 1; i++) {
+      shellEdges.add(`${chain[i]}->${chain[i + 1]}`);
+    }
+  }
+
   const nodes = Array.from(accountMap.values()).map((account) => ({
     data: {
       id: account.account_id,
@@ -511,14 +582,17 @@ function buildCytoscapeData(
       out_degree: account.out_degree,
       total_amount_sent: account.total_amount_sent,
       total_amount_received: account.total_amount_received,
+      total_transactions: account.total_transactions,
       explanation: account.explanation,
+      fan_in_transactions: nodeFanInTxs.get(account.account_id) || [],
+      shell_chain_paths: nodeShellPaths.get(account.account_id) || [],
     },
   }));
 
-  // Aggregate edges
+  // Aggregate edges with pattern types and latest timestamp
   const edgeMap = new Map<
     string,
-    { amount: number; count: number; source: string; target: string }
+    { amount: number; count: number; source: string; target: string; latestTs: string; patternTypes: Set<string> }
   >();
   for (const tx of transactions) {
     const key = `${tx.sender_id}->${tx.receiver_id}`;
@@ -528,11 +602,22 @@ function buildCytoscapeData(
         count: 0,
         source: tx.sender_id,
         target: tx.receiver_id,
+        latestTs: tx.timestamp,
+        patternTypes: new Set(),
       });
     }
     const edge = edgeMap.get(key)!;
     edge.amount += tx.amount;
     edge.count++;
+    if (tx.timestamp > edge.latestTs) edge.latestTs = tx.timestamp;
+  }
+
+  // Assign pattern types to edges
+  for (const [key, edge] of edgeMap) {
+    if (cycleEdges.has(key)) edge.patternTypes.add('cycle');
+    if (fanInEdges.has(key)) edge.patternTypes.add('fan_in');
+    if (fanOutEdges.has(key)) edge.patternTypes.add('fan_out');
+    if (shellEdges.has(key)) edge.patternTypes.add('shell_chain');
   }
 
   const edges = Array.from(edgeMap.entries()).map(([key, data]) => ({
@@ -543,6 +628,8 @@ function buildCytoscapeData(
       amount: Math.round(data.amount * 100) / 100,
       transaction_count: data.count,
       label: `$${data.amount.toLocaleString()} (${data.count}x)`,
+      timestamp: data.latestTs,
+      pattern_types: Array.from(data.patternTypes),
     },
   }));
 
@@ -642,8 +729,16 @@ export function analyzeTransactions(
     }
   }
 
-  // Build Cytoscape data
-  const graphData = buildCytoscapeData(accountMap, transactions);
+  // Build Cytoscape data with detection results
+  const graphData = buildCytoscapeData(
+    accountMap,
+    transactions,
+    fanInMap,
+    fanOutMap,
+    shellChains,
+    cycles,
+    ringMap
+  );
 
   const endTime = performance.now();
   const processingTime =

@@ -21,9 +21,9 @@ interface FraudRingTableProps {
 
 const PATTERN_LABELS: Record<string, { label: string; color: string }> = {
   cycle: { label: 'Cycle', color: '#ef4444' },
-  fan_in: { label: 'Fan-In', color: '#f97316' },
-  fan_out: { label: 'Fan-Out', color: '#eab308' },
-  shell_chain: { label: 'Shell Chain', color: '#8b5cf6' },
+  fan_in: { label: 'Fan-In', color: '#3b82f6' },
+  fan_out: { label: 'Fan-Out', color: '#f97316' },
+  shell_chain: { label: 'Shell Chain', color: '#a855f7' },
 };
 
 export function FraudRingTable({ rings, onRingSelect }: FraudRingTableProps) {

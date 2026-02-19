@@ -178,9 +178,9 @@ export default function Home() {
                     <div className="space-y-2 text-sm">
                       {[
                         { label: 'Cycles (3-5)', count: analysis.fraudRings.filter(r => r.pattern_type === 'cycle').length, color: '#ef4444' },
-                        { label: 'Fan-In', count: analysis.fraudRings.filter(r => r.pattern_type === 'fan_in').length, color: '#f97316' },
-                        { label: 'Fan-Out', count: analysis.fraudRings.filter(r => r.pattern_type === 'fan_out').length, color: '#eab308' },
-                        { label: 'Shell Chains', count: analysis.fraudRings.filter(r => r.pattern_type === 'shell_chain').length, color: '#8b5cf6' },
+                        { label: 'Fan-In', count: analysis.fraudRings.filter(r => r.pattern_type === 'fan_in').length, color: '#3b82f6' },
+                        { label: 'Fan-Out', count: analysis.fraudRings.filter(r => r.pattern_type === 'fan_out').length, color: '#f97316' },
+                        { label: 'Shell Chains', count: analysis.fraudRings.filter(r => r.pattern_type === 'shell_chain').length, color: '#a855f7' },
                       ].map(item => (
                         <div key={item.label} className="flex justify-between items-center">
                           <div className="flex items-center gap-2">

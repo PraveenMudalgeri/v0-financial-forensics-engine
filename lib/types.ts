@@ -94,7 +94,10 @@ export interface CytoscapeNode {
     out_degree: number;
     total_amount_sent: number;
     total_amount_received: number;
+    total_transactions: number;
     explanation: string;
+    fan_in_transactions: FanInTransaction[];
+    shell_chain_paths: ShellChainPath[];
   };
 }
 
@@ -106,5 +109,19 @@ export interface CytoscapeEdge {
     amount: number;
     transaction_count: number;
     label: string;
+    timestamp?: string;
+    pattern_types: string[];
   };
+}
+
+export interface FanInTransaction {
+  sender_id: string;
+  receiver_id: string;
+  amount: number;
+  timestamp: string;
+}
+
+export interface ShellChainPath {
+  path: string[];
+  hops: { from: string; to: string; amount: number; timestamp: string }[];
 }
