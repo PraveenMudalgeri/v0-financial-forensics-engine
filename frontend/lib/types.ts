@@ -39,7 +39,7 @@ export interface AccountNode {
 
 export interface FraudRing {
   ring_id: string;
-  pattern_type: 'cycle' | 'fan_in' | 'fan_out' | 'shell_chain';
+  pattern_type: 'cycle' | 'fan_in' | 'fan_out' | 'shell_chain' | 'community';
   members: string[];
   member_count: number;
   risk_score: number;
@@ -58,7 +58,7 @@ export interface SuspiciousAccount {
   account_id: string;
   suspicion_score: number; // 0-100
   detected_patterns: string[];
-  ring_ids: string[];
+  ring_id: string;
   triggered_algorithms: string[];
   explanation: string;
 }
@@ -66,16 +66,16 @@ export interface SuspiciousAccount {
 export interface FraudRingOutput {
   ring_id: string;
   pattern_type: string;
-  members: string[];
+  member_accounts: string[];
   member_count: number;
   risk_score: number;
 }
 
 export interface SummaryOutput {
-  total_accounts: number;
+  total_accounts_analyzed: number;
   total_transactions: number;
-  total_suspicious_accounts: number;
-  total_fraud_rings: number;
+  suspicious_accounts_flagged: number;
+  fraud_rings_detected: number;
   processing_time_seconds: number;
 }
 

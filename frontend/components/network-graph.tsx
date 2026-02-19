@@ -36,6 +36,7 @@ const PATTERN_COLORS: Record<string, string> = {
   fan_in: '#3b82f6',
   fan_out: '#f97316',
   shell_chain: '#a855f7',
+  community: '#10b981',
 };
 
 const PATTERN_LABELS: Record<string, string> = {
@@ -43,6 +44,7 @@ const PATTERN_LABELS: Record<string, string> = {
   fan_in: 'Fan-In',
   fan_out: 'Fan-Out',
   shell_chain: 'Shell Chain',
+  community: 'Community',
 };
 
 function getNodeColor(patterns: string[] | undefined | null): string {
@@ -234,7 +236,7 @@ export function NetworkGraph({
         const classes: string[] = [];
 
         // Primary pattern class for background-color
-        const priority = ['cycle', 'shell_chain', 'fan_in', 'fan_out'];
+        const priority = ['cycle', 'shell_chain', 'fan_in', 'fan_out', 'community'];
         for (const p of priority) {
           if (patterns.includes(p)) {
             classes.push(`pat-${p}`);
@@ -285,7 +287,7 @@ export function NetworkGraph({
         const classes: string[] = [];
 
         // Edge pattern class for color
-        const priority = ['cycle', 'shell_chain', 'fan_in', 'fan_out'];
+        const priority = ['cycle', 'shell_chain', 'fan_in', 'fan_out', 'community'];
         for (const p of priority) {
           if (patternTypes.includes(p)) {
             classes.push(`ept-${p}`);
@@ -358,12 +360,14 @@ export function NetworkGraph({
             { selector: 'node.pat-fan_in', style: { 'background-color': '#3b82f6' } as any },
             { selector: 'node.pat-fan_out', style: { 'background-color': '#f97316' } as any },
             { selector: 'node.pat-shell_chain', style: { 'background-color': '#a855f7' } as any },
+            { selector: 'node.pat-community', style: { 'background-color': '#10b981' } as any },
             // ── NODE BORDER COLORS (secondary pattern) ────
             { selector: 'node.suspicious', style: { 'border-color': '#ffffff', 'font-weight': 'bold', 'font-size': '9px' } as any },
             { selector: 'node.bdr-cycle', style: { 'border-color': '#ef4444' } as any },
             { selector: 'node.bdr-fan_in', style: { 'border-color': '#3b82f6' } as any },
             { selector: 'node.bdr-fan_out', style: { 'border-color': '#f97316' } as any },
             { selector: 'node.bdr-shell_chain', style: { 'border-color': '#a855f7' } as any },
+            { selector: 'node.bdr-community', style: { 'border-color': '#10b981' } as any },
             // ── NODE STATES ───────────────────────────────
             { selector: 'node.critical', style: { 'border-color': '#fbbf24', 'border-width': 4 } as any },
             { selector: 'node.hovered', style: { 'border-width': 6, 'z-index': 50 } as any },
@@ -390,6 +394,7 @@ export function NetworkGraph({
             { selector: 'edge.ept-fan_in', style: { 'line-color': '#3b82f6', 'target-arrow-color': '#3b82f6' } as any },
             { selector: 'edge.ept-fan_out', style: { 'line-color': '#f97316', 'target-arrow-color': '#f97316' } as any },
             { selector: 'edge.ept-shell_chain', style: { 'line-color': '#a855f7', 'target-arrow-color': '#a855f7' } as any },
+            { selector: 'edge.ept-community', style: { 'line-color': '#10b981', 'target-arrow-color': '#10b981' } as any },
             // ── HIGHLIGHTS ────────────────────────────────
             {
               selector: '.highlighted',

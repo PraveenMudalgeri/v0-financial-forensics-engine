@@ -215,13 +215,13 @@ export default function Home() {
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Total Suspicious</span>
                           <span className="font-mono font-semibold text-red-500">
-                            {analysis.summary.total_suspicious_accounts}
+                            {analysis.summary.suspicious_accounts_flagged}
                           </span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Total Fraud Rings</span>
                           <span className="font-mono font-semibold text-foreground">
-                            {analysis.summary.total_fraud_rings}
+                            {analysis.summary.fraud_rings_detected}
                           </span>
                         </div>
                         <div className="flex justify-between">
