@@ -187,20 +187,6 @@ export function NetworkGraph({
       return;
     }
 
-    const cytoscape = (await import('cytoscape')).default;
-
-    if (cyRef.current) {
-      cyRef.current.destroy();
-    }
-
-    const { nodes: filteredNodes, edges: filteredEdges } =
-      getFilteredElements(patternFilter);
-
-    if (filteredNodes.length === 0) {
-      cyRef.current = null;
-      return;
-    }
-
     const elements: any[] = [];
 
     filteredNodes.forEach((node) => {
