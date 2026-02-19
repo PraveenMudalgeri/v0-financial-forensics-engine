@@ -479,8 +479,8 @@ TXN003,ACC_C,ACC_A,4600.00,2025-01-16 09:00:00
 
 | Name | GitHub |
 |------|--------|
-| **Praveen Mudalgeri** | [@PraveenMudalgeri](https://github.com/PraveenMudalgeri) |
 | **Abhishek Hiremath** | [@Savyasachi-2005](https://github.com/Savyasachi-2005) |
+| **Praveen Mudalgeri** | [@PraveenMudalgeri](https://github.com/PraveenMudalgeri) |
 | **Chetankumar Ramesh Shiddappanavar** | [@chetankumar-rs](https://github.com/chetankumar-rs) |
 | **Mohammed Vasim Khasimasab Hawaldar** | [@aasim34](https://github.com/aasim34) |
 
