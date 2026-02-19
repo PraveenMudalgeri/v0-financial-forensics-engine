@@ -21,7 +21,7 @@ export function MetricsDashboard({ analysis }: MetricsDashboardProps) {
   const metrics = [
     {
       title: 'Total Accounts',
-      value: summary.total_accounts.toLocaleString(),
+      value: summary.total_accounts_analyzed.toLocaleString(),
       icon: Users,
       color: 'text-blue-500',
       bgColor: 'bg-blue-500/10',
@@ -35,14 +35,14 @@ export function MetricsDashboard({ analysis }: MetricsDashboardProps) {
     },
     {
       title: 'Suspicious Accounts',
-      value: summary.total_suspicious_accounts.toLocaleString(),
+      value: summary.suspicious_accounts_flagged.toLocaleString(),
       icon: AlertTriangle,
       color: 'text-red-500',
       bgColor: 'bg-red-500/10',
     },
     {
       title: 'Fraud Rings',
-      value: summary.total_fraud_rings.toLocaleString(),
+      value: summary.fraud_rings_detected.toLocaleString(),
       icon: Network,
       color: 'text-amber-500',
       bgColor: 'bg-amber-500/10',

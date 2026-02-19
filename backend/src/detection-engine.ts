@@ -387,6 +387,242 @@ function calculateSuspicionScores(
   }
 }
 
+// ─── 7. INTERCONNECTED MULE COMMUNITY DETECTION ─────────────────────────────
+// Network-level money laundering detection via connected components on the
+// suspicious subgraph.  Validates communities using multi-signal criteria
+// (at least 2 INDEPENDENT fraud evidences) and promotes them into unified
+// laundering rings.  Overlapping pattern-level rings within the same connected
+// component are merged under a single community ring ID.
+// Time complexity: O(V + E) over the suspicious subgraph (BFS)
+
+interface CommunityResult {
+  rings: FraudRing[];
+  /** Account ID → community ring IDs (for updating account metadata) */
+  membershipMap: Map<string, string[]>;
+  /** Pattern-level ring IDs that were subsumed by each community ring */
+  mergedRingMap: Map<string, string[]>;
+}
+
+function detectMuleCommunities(
+  graph: AdjList,
+  accountMap: Map<string, AccountNode>,
+  cycles: string[][],
+  fanInMap: Map<string, { senders: Set<string> }>,
+  fanOutMap: Map<string, { receivers: Set<string> }>,
+  shellChains: string[][],
+  patternRings: FraudRing[],
+): CommunityResult {
+  // ── Step 1: Build suspicious subgraph ─────────────────────────────────
+  // Nodes: accounts with suspicion_score > 0
+  // Edges: directed edges where BOTH endpoints are suspicious
+
+  const suspiciousIds = new Set<string>();
+  for (const [id, account] of accountMap) {
+    if (account.suspicion_score > 0) suspiciousIds.add(id);
+  }
+
+  // Undirected adjacency for the suspicious subgraph (for BFS)
+  const suspAdj = new Map<string, Set<string>>();
+
+  for (const nodeId of suspiciousIds) {
+    if (!suspAdj.has(nodeId)) suspAdj.set(nodeId, new Set());
+    const neighbors = graph.get(nodeId);
+    if (!neighbors) continue;
+    for (const [neighbor] of neighbors) {
+      if (!suspiciousIds.has(neighbor)) continue;
+      // Add undirected edge
+      if (!suspAdj.has(neighbor)) suspAdj.set(neighbor, new Set());
+      suspAdj.get(nodeId)!.add(neighbor);
+      suspAdj.get(neighbor)!.add(nodeId);
+    }
+  }
+
+  // ── Step 2: Find connected components via BFS ────────────────────────
+  const visited = new Set<string>();
+  const components: string[][] = [];
+
+  for (const nodeId of suspiciousIds) {
+    if (visited.has(nodeId)) continue;
+
+    const component: string[] = [];
+    const queue: string[] = [nodeId];
+    visited.add(nodeId);
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      component.push(current);
+      const adj = suspAdj.get(current);
+      if (!adj) continue;
+      for (const neighbor of adj) {
+        if (!visited.has(neighbor)) {
+          visited.add(neighbor);
+          queue.push(neighbor);
+        }
+      }
+    }
+
+    // Only consider components with ≥ 2 members
+    if (component.length >= 2) components.push(component);
+  }
+
+  // ── Pre-compute pattern membership sets for fast lookup ──────────────
+  const cycleNodes = new Set<string>();
+  for (const cycle of cycles) {
+    for (const n of cycle) cycleNodes.add(n);
+  }
+  const fanInNodes = new Set<string>();
+  for (const [id] of fanInMap) fanInNodes.add(id);
+  const fanOutNodes = new Set<string>();
+  for (const [id] of fanOutMap) fanOutNodes.add(id);
+  const shellNodeSet = new Set<string>();
+  for (const chain of shellChains) {
+    for (const n of chain) shellNodeSet.add(n);
+  }
+
+  // ── Pre-compute: which pattern-level ring IDs each account belongs to ─
+  // Used later to merge overlapping rings under one community ring
+  const accountToPatternRings = new Map<string, Set<string>>();
+  for (const ring of patternRings) {
+    for (const memberId of ring.members) {
+      if (!accountToPatternRings.has(memberId)) {
+        accountToPatternRings.set(memberId, new Set());
+      }
+      accountToPatternRings.get(memberId)!.add(ring.ring_id);
+    }
+  }
+
+  // ── Step 3 & 4: Validate components and build community rings ────────
+  const communityRings: FraudRing[] = [];
+  const membershipMap = new Map<string, string[]>();
+  const mergedRingMap = new Map<string, string[]>();
+  let commIdx = 0;
+
+  for (const component of components) {
+    const compSet = new Set(component);
+
+    // Count directed edges within this component
+    let internalEdges = 0;
+    for (const nodeId of component) {
+      const neighbors = graph.get(nodeId);
+      if (!neighbors) continue;
+      for (const [neighbor] of neighbors) {
+        if (compSet.has(neighbor)) internalEdges++;
+      }
+    }
+
+    // ── Independent fraud evidence validation ──────────────────────────
+    // Each evidence type is counted as ONE independent signal regardless
+    // of how many nodes satisfy it.  A component is valid only when at
+    // least TWO distinct evidence categories are present.
+
+    const evidences: string[] = [];
+
+    // Evidence 1: Contains ≥ 1 cycle ring member
+    const cycleCount = component.filter(n => cycleNodes.has(n)).length;
+    if (cycleCount >= 1) evidences.push('cycle');
+
+    // Evidence 2: Contains ≥ 1 fan-in pattern
+    const fanInCount = component.filter(n => fanInNodes.has(n)).length;
+    if (fanInCount >= 1) evidences.push('fan_in');
+
+    // Evidence 3: Contains ≥ 1 fan-out pattern
+    const fanOutCount = component.filter(n => fanOutNodes.has(n)).length;
+    if (fanOutCount >= 1) evidences.push('fan_out');
+
+    // Evidence 4: Contains ≥ 1 shell chain node
+    const shellChainCount = component.filter(n => shellNodeSet.has(n)).length;
+    if (shellChainCount >= 1) evidences.push('shell_chain');
+
+    // Evidence 5: Contains ≥ 1 bridge node (connected to ≥ 2 suspicious neighbors)
+    const bridgeCount = component.filter(n => {
+      const adj = suspAdj.get(n);
+      return adj !== undefined && adj.size >= 2;
+    }).length;
+    if (bridgeCount >= 1) evidences.push('bridge');
+
+    // Evidence 6: Edge density ≥ 1 (directed edges >= nodes)
+    if (internalEdges >= component.length) evidences.push('density');
+
+    // ── Require at least 2 INDEPENDENT evidence categories ─────────────
+    if (evidences.length < 2) continue;
+
+    commIdx++;
+    const ringId = `RING_COMM_${String(commIdx).padStart(3, '0')}`;
+
+    // ── Merge overlapping pattern-level rings ──────────────────────────
+    // Collect ALL pattern-level ring IDs whose members fall into this
+    // connected component.  They are subsumed under the community ring.
+    const subsumedRingIds = new Set<string>();
+    for (const memberId of component) {
+      const pRings = accountToPatternRings.get(memberId);
+      if (pRings) {
+        for (const pRingId of pRings) subsumedRingIds.add(pRingId);
+      }
+    }
+    mergedRingMap.set(ringId, Array.from(subsumedRingIds));
+
+    // ── Step 5: Compute community risk score ───────────────────────────
+    const fanPatternCount = fanInCount + fanOutCount;
+    const maxScore = Math.max(
+      ...component.map(id => accountMap.get(id)?.suspicion_score ?? 0)
+    );
+    const riskScore = Math.min(
+      100,
+      maxScore
+        + 10 * cycleCount
+        + 8 * fanPatternCount
+        + 6 * shellChainCount,
+    );
+
+    // Total value of internal transactions
+    let totalValue = 0;
+    for (const nodeId of component) {
+      const neighbors = graph.get(nodeId);
+      if (!neighbors) continue;
+      for (const [neighbor, txs] of neighbors) {
+        if (compSet.has(neighbor)) {
+          for (const tx of txs) totalValue += tx.amount;
+        }
+      }
+    }
+
+    const explanationParts: string[] = [
+      `Interconnected mule community of ${component.length} suspicious accounts`,
+      `${internalEdges} internal edges`,
+      `Evidence: ${evidences.join(', ')}`,
+    ];
+    if (cycleCount > 0) explanationParts.push(`${cycleCount} cycle member(s)`);
+    if (fanInCount > 0) explanationParts.push(`${fanInCount} fan-in node(s)`);
+    if (fanOutCount > 0) explanationParts.push(`${fanOutCount} fan-out node(s)`);
+    if (shellChainCount > 0) explanationParts.push(`${shellChainCount} shell chain node(s)`);
+    if (bridgeCount > 0) explanationParts.push(`${bridgeCount} bridge node(s)`);
+    if (subsumedRingIds.size > 0) {
+      explanationParts.push(
+        `Merges pattern-level rings: ${Array.from(subsumedRingIds).join(', ')}`
+      );
+    }
+    explanationParts.push(`Total internal value: $${Math.round(totalValue).toLocaleString()}`);
+
+    communityRings.push({
+      ring_id: ringId,
+      pattern_type: 'community',
+      members: component,
+      member_count: component.length,
+      risk_score: Math.round(riskScore),
+      total_value: Math.round(totalValue * 100) / 100,
+      explanation: explanationParts.join('. ') + '.',
+    });
+
+    // Record membership for account updates
+    for (const memberId of component) {
+      if (!membershipMap.has(memberId)) membershipMap.set(memberId, []);
+      membershipMap.get(memberId)!.push(ringId);
+    }
+  }
+
+  return { rings: communityRings, membershipMap, mergedRingMap };
+}
+
 // ─── BUILD FRAUD RINGS ───────────────────────────────────────────────────────
 
 function buildFraudRings(
@@ -796,6 +1032,59 @@ export function analyzeTransactions(
     transactions,
   );
 
+  // ── Algorithm 7: Interconnected Mule Community Detection ───────────────
+  // Runs after all scoring so it can inspect final suspicion_score.
+  // Detects coordinated laundering networks via connected components on the
+  // suspicious subgraph.  Validates with ≥ 2 independent evidence categories.
+  // Merges overlapping pattern-level rings under a single community ring ID.
+  const { rings: communityRings, membershipMap: communityMembership, mergedRingMap } =
+    detectMuleCommunities(
+      graph,
+      accountMap,
+      cycles,
+      fanInMap,
+      fanOutMap,
+      shellChains,
+      fraudRings,
+    );
+
+  // Append community rings to the existing fraud rings list
+  fraudRings.push(...communityRings);
+
+  // Update account metadata with community ring IDs and algorithm tag.
+  // Replace subsumed pattern-level ring IDs with the community ring ID
+  // so accounts show a single unified community membership.
+  for (const [accountId, commRingIds] of communityMembership) {
+    const account = accountMap.get(accountId);
+    if (!account) continue;
+
+    // Determine which pattern-level ring IDs this community subsumes
+    const allSubsumed = new Set<string>();
+    for (const crid of commRingIds) {
+      const subsumed = mergedRingMap.get(crid);
+      if (subsumed) {
+        for (const rid of subsumed) allSubsumed.add(rid);
+      }
+    }
+
+    // Replace subsumed pattern-level ring IDs with community ring IDs
+    account.ring_ids = account.ring_ids.filter(rid => !allSubsumed.has(rid));
+    for (const rid of commRingIds) {
+      if (!account.ring_ids.includes(rid)) account.ring_ids.push(rid);
+    }
+
+    if (!account.detected_patterns.includes('community')) {
+      account.detected_patterns.push('community');
+    }
+    if (!account.triggered_algorithms.includes('Mule Community Detection (BFS Components)')) {
+      account.triggered_algorithms.push('Mule Community Detection (BFS Components)');
+    }
+    account.explanation += ` | Community member: ${commRingIds.join(', ')}`;
+  }
+
+  // Re-sort fraud rings by risk_score descending after adding community rings
+  fraudRings.sort((a, b) => b.risk_score - a.risk_score);
+
   // Build Cytoscape data with detection results
   const graphData = buildCytoscapeData(
     accountMap,
@@ -823,7 +1112,7 @@ export function analyzeTransactions(
       account_id: a.account_id,
       suspicion_score: a.suspicion_score,
       detected_patterns: a.detected_patterns,
-      ring_ids: a.ring_ids,
+      ring_id: a.ring_ids[0] || '',
       triggered_algorithms: a.triggered_algorithms,
       explanation: a.explanation,
     }));
@@ -833,15 +1122,15 @@ export function analyzeTransactions(
     fraud_rings: fraudRings.map((r) => ({
       ring_id: r.ring_id,
       pattern_type: r.pattern_type,
-      members: r.members,
+      member_accounts: r.members,
       member_count: r.member_count,
       risk_score: r.risk_score,
     })),
     summary: {
-      total_accounts: accounts.length,
+      total_accounts_analyzed: accounts.length,
       total_transactions: transactions.length,
-      total_suspicious_accounts: suspiciousAccounts.length,
-      total_fraud_rings: fraudRings.length,
+      suspicious_accounts_flagged: suspiciousAccounts.length,
+      fraud_rings_detected: fraudRings.length,
       processing_time_seconds: processingTime,
     },
   };
