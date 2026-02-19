@@ -182,7 +182,6 @@ export function NetworkGraph({
   // Only depends on graphData and patternFilter – NOT on pinnedNode/onNodeClick
   useEffect(() => {
     let cancelled = false;
-    let pulseInterval: ReturnType<typeof setInterval> | null = null;
     let layoutRef: any = null;
 
     const destroyCy = (instance: any) => {
@@ -224,7 +223,6 @@ export function NetworkGraph({
 
       filteredNodes.forEach((node) => {
         const patterns = node.data.detected_patterns || [];
-        const color = getNodeColor(patterns);
         const isSuspicious = !!node.data.is_suspicious;
         const hasMultiplePatterns = patterns.length > 1;
         const score = node.data.suspicion_score ?? 0;
@@ -232,10 +230,37 @@ export function NetworkGraph({
         // Store full data for tooltip lookups (NOT inside Cytoscape)
         nodeDataMap.set(node.data.id, node.data);
 
+        // Determine classes for pattern-based coloring (avoids data() mappers for colors)
+        const classes: string[] = [];
+
+        // Primary pattern class for background-color
+        const priority = ['cycle', 'shell_chain', 'fan_in', 'fan_out'];
+        for (const p of priority) {
+          if (patterns.includes(p)) {
+            classes.push(`pat-${p}`);
+            break;
+          }
+        }
+
+        // Secondary pattern class for border-color (multi-pattern nodes)
+        if (hasMultiplePatterns) {
+          classes.push('multi-pattern');
+          const secondary = patterns.filter((p: string) => p !== patterns[0]);
+          for (const p of priority) {
+            if (secondary.includes(p)) {
+              classes.push(`bdr-${p}`);
+              break;
+            }
+          }
+        }
+
+        if (isSuspicious) classes.push('suspicious');
+        if (score > 70) classes.push('critical');
+
         elements.push({
           group: 'nodes',
           data: {
-            // Only include primitive values that Cytoscape styles reference
+            // Only primitive values for data() mappers — numeric only
             id: node.data.id,
             label: node.data.label || node.data.id || '',
             suspicion_score: score,
@@ -245,45 +270,47 @@ export function NetworkGraph({
             total_amount_sent: node.data.total_amount_sent ?? 0,
             total_amount_received: node.data.total_amount_received ?? 0,
             total_transactions: node.data.total_transactions ?? 0,
-            // Style-specific computed values
-            nodeColor: color,
+            // Numeric-only data mappers (safe — they go through updateGrKey, not updateGrKeyWStr)
             nodeSize: isSuspicious
               ? 28 + Math.min(score / 3, 22)
               : 18,
             borderWidth: hasMultiplePatterns ? 5 : isSuspicious ? 3 : 1.5,
-            borderColor: hasMultiplePatterns
-              ? getNodeColor(
-                  patterns.filter(
-                    (p: string) => p !== patterns[0]
-                  )
-                )
-              : isSuspicious
-              ? '#ffffff'
-              : 'rgba(255,255,255,0.15)',
           },
+          classes: classes.join(' '),
         });
       });
 
       filteredEdges.forEach((edge, idx) => {
         const patternTypes = edge.data.pattern_types || [];
+        const classes: string[] = [];
+
+        // Edge pattern class for color
+        const priority = ['cycle', 'shell_chain', 'fan_in', 'fan_out'];
+        for (const p of priority) {
+          if (patternTypes.includes(p)) {
+            classes.push(`ept-${p}`);
+            break;
+          }
+        }
+        if (patternTypes.length > 0) classes.push('patterned');
+
         elements.push({
           group: 'edges',
           data: {
-            // Use a clean numeric ID to avoid Cytoscape selector issues with '->'
             id: `e${idx}`,
             source: edge.data.source,
             target: edge.data.target,
             amount: edge.data.amount ?? 0,
             transaction_count: edge.data.transaction_count ?? 0,
             label: edge.data.label || '',
-            // Style-specific computed values
-            edgeColor: getEdgeColor(patternTypes),
+            // Numeric-only data mapper (safe)
             edgeWidth: isLargeGraph
               ? 1
               : patternTypes.length > 0
               ? 2
               : 1.2,
           },
+          classes: classes.join(' '),
         });
       });
 
@@ -304,14 +331,18 @@ export function NetworkGraph({
           // to keep a reference for stopping it on cleanup
           layout: { name: 'preset' },
           style: [
+            // ── NODE BASE ─────────────────────────────────
+            // Colors are set via classes, NOT data() mappers, to avoid
+            // Cytoscape updateGrKeyWStr crash (color props have type.multiple=true
+            // which bypasses the numeric hash path and calls strVal.length)
             {
               selector: 'node',
               style: {
-                'background-color': 'data(nodeColor)',
+                'background-color': '#6366f1',
                 width: 'data(nodeSize)',
                 height: 'data(nodeSize)',
                 'border-width': 'data(borderWidth)',
-                'border-color': 'data(borderColor)',
+                'border-color': 'rgba(255,255,255,0.15)',
                 label: isLargeGraph ? '' : 'data(label)',
                 'font-size': '8px',
                 color: '#cbd5e1',
@@ -322,19 +353,27 @@ export function NetworkGraph({
                 'min-zoomed-font-size': 10,
               } as any,
             },
-            {
-              selector: 'node[?is_suspicious]',
-              style: {
-                'font-weight': 'bold',
-                'font-size': '9px',
-              } as any,
-            },
+            // ── NODE PATTERN COLORS (background) ──────────
+            { selector: 'node.pat-cycle', style: { 'background-color': '#ef4444' } as any },
+            { selector: 'node.pat-fan_in', style: { 'background-color': '#3b82f6' } as any },
+            { selector: 'node.pat-fan_out', style: { 'background-color': '#f97316' } as any },
+            { selector: 'node.pat-shell_chain', style: { 'background-color': '#a855f7' } as any },
+            // ── NODE BORDER COLORS (secondary pattern) ────
+            { selector: 'node.suspicious', style: { 'border-color': '#ffffff', 'font-weight': 'bold', 'font-size': '9px' } as any },
+            { selector: 'node.bdr-cycle', style: { 'border-color': '#ef4444' } as any },
+            { selector: 'node.bdr-fan_in', style: { 'border-color': '#3b82f6' } as any },
+            { selector: 'node.bdr-fan_out', style: { 'border-color': '#f97316' } as any },
+            { selector: 'node.bdr-shell_chain', style: { 'border-color': '#a855f7' } as any },
+            // ── NODE STATES ───────────────────────────────
+            { selector: 'node.critical', style: { 'border-color': '#fbbf24', 'border-width': 4 } as any },
+            { selector: 'node.hovered', style: { 'border-width': 6, 'z-index': 50 } as any },
+            // ── EDGE BASE ─────────────────────────────────
             {
               selector: 'edge',
               style: {
                 width: 'data(edgeWidth)',
-                'line-color': 'data(edgeColor)',
-                'target-arrow-color': 'data(edgeColor)',
+                'line-color': '#6366f1',
+                'target-arrow-color': '#6366f1',
                 'target-arrow-shape': 'triangle',
                 'curve-style': 'bezier',
                 'arrow-scale': 0.7,
@@ -346,6 +385,12 @@ export function NetworkGraph({
                 'text-outline-color': '#0a0e1a',
               } as any,
             },
+            // ── EDGE PATTERN COLORS ───────────────────────
+            { selector: 'edge.ept-cycle', style: { 'line-color': '#ef4444', 'target-arrow-color': '#ef4444' } as any },
+            { selector: 'edge.ept-fan_in', style: { 'line-color': '#3b82f6', 'target-arrow-color': '#3b82f6' } as any },
+            { selector: 'edge.ept-fan_out', style: { 'line-color': '#f97316', 'target-arrow-color': '#f97316' } as any },
+            { selector: 'edge.ept-shell_chain', style: { 'line-color': '#a855f7', 'target-arrow-color': '#a855f7' } as any },
+            // ── HIGHLIGHTS ────────────────────────────────
             {
               selector: '.highlighted',
               style: {
@@ -363,19 +408,16 @@ export function NetworkGraph({
                 'z-index': 100,
               } as any,
             },
-            {
-              selector: '.critical-pulse',
-              style: {
-                'border-width': 4,
-                'border-color': '#fbbf24',
-              } as any,
-            },
+            // ── EDGE LABEL ON HOVER ───────────────────────
             {
               selector: 'edge.show-label',
               style: {
                 label: 'data(label)',
               } as any,
             },
+            // ── ZOOM-BASED LABELS ─────────────────────────
+            { selector: 'node.show-label', style: { label: 'data(label)', 'font-size': '9px' } as any },
+            { selector: 'node.show-label-suspicious', style: { label: 'data(label)' } as any },
           ],
           minZoom: 0.2,
           maxZoom: 4,
@@ -398,40 +440,16 @@ export function NetworkGraph({
         layoutRef.run();
       } catch (_) {}
 
-      // Pulsing animation for critical nodes (>70 score)
-      if (!isLargeGraph) {
-        const criticalNodes = cy.nodes().filter(
-          (n: any) => n.data('suspicion_score') > 70
-        );
-        criticalNodes.addClass('critical-pulse');
+      // Critical nodes are already styled via the 'critical' class — no animation needed
+      // (Removes all .animate() calls that could corrupt strValue in Cytoscape style hints)
 
-        let pulseState = false;
-        pulseInterval = setInterval(() => {
-          if (cy.destroyed()) {
-            if (pulseInterval) clearInterval(pulseInterval);
-            return;
-          }
-          pulseState = !pulseState;
-          try {
-            criticalNodes.animate({
-              style: {
-                'border-width': pulseState ? 5 : 3,
-                'border-color': pulseState ? '#fbbf24' : '#f97316',
-              } as any,
-              duration: 1000,
-              easing: 'ease-in-out-sine' as any,
-            });
-          } catch (_) {}
-        }, 1000);
-      }
-
-      // Hover tooltip with 300ms delay
+      // Hover tooltip with 300ms delay — use addClass/removeClass only (no .style() calls)
       cy.on('mouseover', 'node', (evt: any) => {
         if (cy.destroyed()) return;
         const node = evt.target;
         if (containerRef.current) containerRef.current.style.cursor = 'pointer';
         try {
-          node.style('border-width', Math.max(node.data('borderWidth') + 2, 5));
+          node.addClass('hovered');
         } catch (_) {}
 
         if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
@@ -440,7 +458,6 @@ export function NetworkGraph({
             if (cy.destroyed()) return;
             const renderedPos = node.renderedPosition();
             setTooltipPos({ x: renderedPos.x, y: renderedPos.y });
-            // Merge Cytoscape element data with full data from lookup map
             const nodeId = node.data('id');
             const fullData = nodeDataMap.get(nodeId);
             setTooltipNode({ ...node.data(), ...fullData });
@@ -460,9 +477,9 @@ export function NetworkGraph({
         }
 
         try {
+          node.removeClass('hovered');
           const currentPinned = pinnedNodeRef.current;
           if (!currentPinned || currentPinned.id !== node.data('id')) {
-            node.style('border-width', node.data('borderWidth'));
             setTooltipVisible(false);
             setTimeout(() => {
               if (!pinnedNodeRef.current) setTooltipNode(null);
@@ -517,7 +534,7 @@ export function NetworkGraph({
         }
       });
 
-      // Show labels when zoomed in
+      // Show labels when zoomed in — use addClass/removeClass (no .style() calls)
       cy.on('zoom', () => {
         try {
           if (cy.destroyed()) return;
@@ -525,14 +542,14 @@ export function NetworkGraph({
           setZoomLevel([zoom]);
           const nodes = cy.nodes();
           if (zoom > 1.5) {
-            nodes.style('label', (n: any) => n.data('label'));
-            nodes.style('font-size', '9px');
+            nodes.addClass('show-label');
+            nodes.removeClass('show-label-suspicious');
           } else if (zoom > 0.8) {
-            nodes.style('label', (n: any) =>
-              n.data('is_suspicious') ? n.data('label') : ''
-            );
+            nodes.removeClass('show-label');
+            nodes.filter('[?is_suspicious]').addClass('show-label-suspicious');
+            nodes.filter('[!is_suspicious]').removeClass('show-label-suspicious');
           } else {
-            nodes.style('label', '');
+            nodes.removeClass('show-label show-label-suspicious');
           }
         } catch (_) {}
       });
@@ -544,7 +561,6 @@ export function NetworkGraph({
 
     return () => {
       cancelled = true;
-      if (pulseInterval) clearInterval(pulseInterval);
       if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
       // Stop the layout before destroying to prevent notify errors
       if (layoutRef) {
@@ -580,28 +596,13 @@ export function NetworkGraph({
     } catch (_) { /* ignore if cy was destroyed between check and use */ }
   }, [highlightedNodes]);
 
-  // TASK 7: Smooth filter transitions
+  // TASK 7: Filter transitions — no .animate() calls to avoid strValue corruption
   const handleFilterChange = (value: string) => {
-    const cy = cyRef.current;
-    if (cy && !cy.destroyed() && !isLargeGraph) {
-      // Fade out existing
-      try {
-        cy.elements().animate({
-          style: { opacity: 0 } as any,
-          duration: 200,
-        });
-      } catch (_) { /* ignore */ }
-    }
-    setTimeout(
-      () => {
-        setPatternFilter(value as PatternFilter);
-        setPinnedNode(null);
-        setTooltipNode(null);
-        setTooltipVisible(false);
-        setShellPanel(null);
-      },
-      isLargeGraph ? 0 : 200
-    );
+    setPatternFilter(value as PatternFilter);
+    setPinnedNode(null);
+    setTooltipNode(null);
+    setTooltipVisible(false);
+    setShellPanel(null);
   };
 
   // Zoom controls
