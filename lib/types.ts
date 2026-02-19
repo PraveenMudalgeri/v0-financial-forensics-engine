@@ -1,151 +1,110 @@
-// Core data types for the Money Muling Detection Engine
+// RIFT 2026 Hackathon - Money Muling Detection Engine Types
+// Strict compliance with required CSV structure and JSON output format
 
-export interface Transaction {
-  id: string;
-  from: string;
-  to: string;
+export interface RawTransaction {
+  transaction_id: string;
+  sender_id: string;
+  receiver_id: string;
   amount: number;
-  timestamp: string;
-  currency: string;
-  description?: string;
-  frequency?: number; // Transaction frequency on this edge
-  temporalCluster?: number; // Which time window cluster
+  timestamp: string; // YYYY-MM-DD HH:MM:SS
 }
 
-export interface Account {
-  id: string;
-  name: string;
-  type: 'personal' | 'business' | 'unknown';
-  riskScore: number;
-  isMule?: boolean;
-  totalIn: number;
-  totalOut: number;
-  transactionCount: number;
-  // Property Graph Attributes
-  totalAmountSent: number;
-  totalAmountReceived: number;
-  firstSeenTimestamp?: string;
-  lastSeenTimestamp?: string;
-  // Advanced Analytics
-  degreeCentrality?: number;
-  betweennessCentrality?: number;
-  pageRank?: number;
-  communityId?: number;
-  // Pattern Detection
-  isLegitimatePattern?: 'merchant' | 'payroll' | null;
-  // Explainability
-  riskFactors?: RiskFactor[];
-  metadata?: {
-    createdAt?: string;
-    country?: string;
-    kycStatus?: string;
-  };
-}
-
-export interface RiskFactor {
-  type: 'structural' | 'behavioral' | 'network' | 'temporal';
-  factor: string;
-  score: number;
+export interface AccountNode {
+  account_id: string;
+  total_transactions: number;
+  in_degree: number;
+  out_degree: number;
+  total_amount_sent: number;
+  total_amount_received: number;
+  suspicion_score: number;
+  detected_patterns: string[];
+  ring_ids: string[];
+  triggered_algorithms: string[];
   explanation: string;
-  algorithmSource: string;
+  is_suspicious: boolean;
 }
 
-export interface NetworkNode extends Account {
-  x?: number;
-  y?: number;
-  vx?: number;
-  vy?: number;
-  fx?: number | null;
-  fy?: number | null;
-}
-
-export interface NetworkLink {
-  source: string | NetworkNode;
-  target: string | NetworkNode;
-  value: number;
-  transactionCount: number;
-}
-
-export interface RingStructure {
-  nodes: string[];
-  totalValue: number;
-  suspicionScore: number;
-  avgTimeGap: number;
-  detectionAlgorithm: string;
-  explanation: string;
-  riskFactors: string[];
-}
-
-export interface PathAnalysis {
-  path: string[];
-  totalValue: number;
-  hopCount: number;
-  avgTransactionAmount: number;
-  timeSpan: number;
-  suspicionScore: number;
-  explanation: string;
-  layeringDepth?: number;
-}
-
-export interface Community {
-  id: number;
-  nodes: string[];
-  internalDensity: number;
-  externalConnections: number;
-  totalValue: number;
-  suspicionScore: number;
-  avgRiskScore: number;
+export interface FraudRing {
+  ring_id: string;
+  pattern_type: 'cycle' | 'fan_in' | 'fan_out' | 'shell_chain';
+  members: string[];
+  member_count: number;
+  risk_score: number;
+  total_value: number;
   explanation: string;
 }
 
-export interface CentralityMetrics {
-  accountId: string;
-  degreeCentrality: number;
-  betweennessCentrality: number;
-  pageRank: number;
-  role: 'aggregator' | 'broker' | 'coordinator' | 'normal';
+// Strict JSON output format per hackathon spec
+export interface HackathonOutput {
+  suspicious_accounts: SuspiciousAccount[];
+  fraud_rings: FraudRingOutput[];
+  summary: SummaryOutput;
+}
+
+export interface SuspiciousAccount {
+  account_id: string;
+  suspicion_score: number; // 0-100
+  detected_patterns: string[];
+  ring_ids: string[];
+  triggered_algorithms: string[];
   explanation: string;
 }
 
-export interface TemporalPattern {
-  accountId: string;
-  pattern: 'velocity_spike' | 'dormancy_activation' | 'burst_activity' | 'steady';
-  transactionsIn72h: number;
-  avgDailyRate: number;
-  suspicionScore: number;
+export interface FraudRingOutput {
+  ring_id: string;
+  pattern_type: string;
+  members: string[];
+  member_count: number;
+  risk_score: number;
 }
 
+export interface SummaryOutput {
+  total_accounts: number;
+  total_transactions: number;
+  total_suspicious_accounts: number;
+  total_fraud_rings: number;
+  processing_time_seconds: number;
+}
+
+// Internal analysis result
 export interface AnalysisResult {
-  accounts: Account[];
-  transactions: Transaction[];
-  rings: RingStructure[];
-  suspiciousPaths: PathAnalysis[];
-  communities: Community[];
-  centralityMetrics: CentralityMetrics[];
-  temporalPatterns: TemporalPattern[];
-  networkMetrics: {
-    totalAccounts: number;
-    totalTransactions: number;
-    totalValue: number;
-    avgRiskScore: number;
-    highRiskAccounts: number;
-    detectedMules: number;
-    communityCount: number;
-    isolatedAccounts: number;
-  };
-  scalabilityInfo: {
-    graphStructure: 'adjacency_list';
-    nodeCount: number;
-    edgeCount: number;
-    avgComplexity: string;
-    recommendedApproach: string;
+  accounts: AccountNode[];
+  transactions: RawTransaction[];
+  fraudRings: FraudRing[];
+  summary: SummaryOutput;
+  hackathonOutput: HackathonOutput;
+  graphData: CytoscapeGraphData;
+}
+
+// Cytoscape graph data
+export interface CytoscapeGraphData {
+  nodes: CytoscapeNode[];
+  edges: CytoscapeEdge[];
+}
+
+export interface CytoscapeNode {
+  data: {
+    id: string;
+    label: string;
+    suspicion_score: number;
+    is_suspicious: boolean;
+    detected_patterns: string[];
+    ring_ids: string[];
+    in_degree: number;
+    out_degree: number;
+    total_amount_sent: number;
+    total_amount_received: number;
+    explanation: string;
   };
 }
 
-export interface GraphMetrics {
-  density: number;
-  avgDegree: number;
-  maxDegree: number;
-  components: number;
-  transitivity: number;
+export interface CytoscapeEdge {
+  data: {
+    id: string;
+    source: string;
+    target: string;
+    amount: number;
+    transaction_count: number;
+    label: string;
+  };
 }

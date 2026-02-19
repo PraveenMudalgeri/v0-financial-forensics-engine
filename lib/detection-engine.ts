@@ -1,0 +1,695 @@
+// RIFT 2026 - Complete Detection Engine
+// Implements: Cycle Detection, Fan-in/Fan-out, Shell Chains, Suspicion Scoring
+// All algorithms documented with time complexity
+
+import {
+  RawTransaction,
+  AccountNode,
+  FraudRing,
+  AnalysisResult,
+  HackathonOutput,
+  CytoscapeGraphData,
+} from './types';
+
+// ─── ADJACENCY LIST GRAPH ────────────────────────────────────────────────────
+// Using adjacency list for O(V+E) traversal, optimal for sparse financial graphs
+
+type AdjList = Map<string, Map<string, RawTransaction[]>>;
+
+function buildAdjacencyList(transactions: RawTransaction[]): AdjList {
+  const graph: AdjList = new Map();
+  for (const tx of transactions) {
+    if (!graph.has(tx.sender_id)) graph.set(tx.sender_id, new Map());
+    if (!graph.has(tx.receiver_id)) graph.set(tx.receiver_id, new Map());
+    const neighbors = graph.get(tx.sender_id)!;
+    if (!neighbors.has(tx.receiver_id)) neighbors.set(tx.receiver_id, []);
+    neighbors.get(tx.receiver_id)!.push(tx);
+  }
+  return graph;
+}
+
+// ─── 1. CYCLE DETECTION ──────────────────────────────────────────────────────
+// Uses DFS-based approach similar to Johnson's algorithm
+// Finds simple cycles of length 3-5
+// Time complexity: O(V + E) per DFS, bounded by max cycle length
+// Total: O((V+E) * V) worst case, but pruned heavily by length limit
+
+function detectCycles(
+  graph: AdjList,
+  allNodes: string[]
+): { cycles: string[][]; ringMap: Map<string, string[]> } {
+  const cycles: string[][] = [];
+  const foundCycleSet = new Set<string>();
+
+  for (const startNode of allNodes) {
+    // DFS with depth limit of 5
+    const stack: { node: string; path: string[] }[] = [
+      { node: startNode, path: [startNode] },
+    ];
+
+    while (stack.length > 0) {
+      const { node, path } = stack.pop()!;
+
+      if (path.length > 5) continue; // Max cycle length 5
+
+      const neighbors = graph.get(node);
+      if (!neighbors) continue;
+
+      for (const [neighbor] of neighbors) {
+        if (neighbor === startNode && path.length >= 3) {
+          // Found a cycle of length 3-5
+          const cycle = [...path];
+          const key = [...cycle].sort().join(',');
+          if (!foundCycleSet.has(key)) {
+            foundCycleSet.add(key);
+            cycles.push(cycle);
+          }
+        } else if (!path.includes(neighbor) && path.length < 5) {
+          stack.push({ node: neighbor, path: [...path, neighbor] });
+        }
+      }
+    }
+  }
+
+  // Assign ring IDs and build ring membership map
+  const ringMap = new Map<string, string[]>();
+  cycles.forEach((cycle, idx) => {
+    const ringId = `RING_${String(idx + 1).padStart(3, '0')}`;
+    for (const node of cycle) {
+      if (!ringMap.has(node)) ringMap.set(node, []);
+      ringMap.get(node)!.push(ringId);
+    }
+  });
+
+  return { cycles, ringMap };
+}
+
+// ─── 2. FAN-IN DETECTION (Smurfing) ─────────────────────────────────────────
+// Sliding 72-hour window: >=10 unique senders to same receiver
+// Time complexity: O(T log T) for sort + O(T) for sliding window = O(T log T)
+// where T = number of transactions for a given receiver
+
+function detectFanIn(
+  transactions: RawTransaction[],
+  allNodes: string[]
+): Map<string, { senders: Set<string>; windowStart: string; windowEnd: string }> {
+  const fanInMap = new Map<string, { senders: Set<string>; windowStart: string; windowEnd: string }>();
+  const window72h = 72 * 60 * 60 * 1000;
+
+  // Group transactions by receiver
+  const byReceiver = new Map<string, RawTransaction[]>();
+  for (const tx of transactions) {
+    if (!byReceiver.has(tx.receiver_id)) byReceiver.set(tx.receiver_id, []);
+    byReceiver.get(tx.receiver_id)!.push(tx);
+  }
+
+  // For each receiver, use sliding window
+  for (const [receiver, txs] of byReceiver) {
+    const sorted = txs.sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+
+    let left = 0;
+    for (let right = 0; right < sorted.length; right++) {
+      const rightTime = new Date(sorted[right].timestamp).getTime();
+
+      // Slide left pointer to maintain 72h window
+      while (
+        left < right &&
+        rightTime - new Date(sorted[left].timestamp).getTime() > window72h
+      ) {
+        left++;
+      }
+
+      // Count unique senders in window
+      const sendersInWindow = new Set<string>();
+      for (let i = left; i <= right; i++) {
+        sendersInWindow.add(sorted[i].sender_id);
+      }
+
+      if (sendersInWindow.size >= 10) {
+        fanInMap.set(receiver, {
+          senders: sendersInWindow,
+          windowStart: sorted[left].timestamp,
+          windowEnd: sorted[right].timestamp,
+        });
+        break; // Found fan-in for this receiver
+      }
+    }
+  }
+
+  return fanInMap;
+}
+
+// ─── 3. FAN-OUT DETECTION ────────────────────────────────────────────────────
+// Sliding 72-hour window: >=10 unique receivers from same sender
+// Time complexity: O(T log T) per sender group
+
+function detectFanOut(
+  transactions: RawTransaction[],
+  allNodes: string[]
+): Map<string, { receivers: Set<string>; windowStart: string; windowEnd: string }> {
+  const fanOutMap = new Map<string, { receivers: Set<string>; windowStart: string; windowEnd: string }>();
+  const window72h = 72 * 60 * 60 * 1000;
+
+  // Group transactions by sender
+  const bySender = new Map<string, RawTransaction[]>();
+  for (const tx of transactions) {
+    if (!bySender.has(tx.sender_id)) bySender.set(tx.sender_id, []);
+    bySender.get(tx.sender_id)!.push(tx);
+  }
+
+  for (const [sender, txs] of bySender) {
+    const sorted = txs.sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+
+    let left = 0;
+    for (let right = 0; right < sorted.length; right++) {
+      const rightTime = new Date(sorted[right].timestamp).getTime();
+
+      while (
+        left < right &&
+        rightTime - new Date(sorted[left].timestamp).getTime() > window72h
+      ) {
+        left++;
+      }
+
+      const receiversInWindow = new Set<string>();
+      for (let i = left; i <= right; i++) {
+        receiversInWindow.add(sorted[i].receiver_id);
+      }
+
+      if (receiversInWindow.size >= 10) {
+        fanOutMap.set(sender, {
+          receivers: receiversInWindow,
+          windowStart: sorted[left].timestamp,
+          windowEnd: sorted[right].timestamp,
+        });
+        break;
+      }
+    }
+  }
+
+  return fanOutMap;
+}
+
+// ─── 4. SHELL CHAIN DETECTION ────────────────────────────────────────────────
+// BFS-based: path length >= 3 hops, intermediate nodes have <= 3 total transactions
+// Time complexity: O(V + E) BFS from each low-activity node
+
+function detectShellChains(
+  graph: AdjList,
+  accountMap: Map<string, AccountNode>,
+  transactions: RawTransaction[]
+): { chains: string[][]; shellNodes: Set<string> } {
+  const chains: string[][] = [];
+  const shellNodes = new Set<string>();
+
+  // Identify potential shell accounts (low transaction count)
+  const lowActivityNodes = new Set<string>();
+  for (const [id, account] of accountMap) {
+    if (account.total_transactions <= 3) {
+      lowActivityNodes.add(id);
+    }
+  }
+
+  // BFS from each node, looking for paths through shell accounts
+  for (const startNode of accountMap.keys()) {
+    const visited = new Set<string>([startNode]);
+    const queue: { node: string; path: string[] }[] = [
+      { node: startNode, path: [startNode] },
+    ];
+
+    while (queue.length > 0) {
+      const { node, path } = queue.shift()!;
+
+      if (path.length > 6) continue; // Limit chain length
+
+      const neighbors = graph.get(node);
+      if (!neighbors) continue;
+
+      for (const [neighbor] of neighbors) {
+        if (visited.has(neighbor)) continue;
+        visited.add(neighbor);
+
+        const newPath = [...path, neighbor];
+
+        // Check if this forms a shell chain (>=3 hops with shell intermediaries)
+        if (newPath.length >= 4) {
+          // path length 4 = 3 hops
+          const intermediates = newPath.slice(1, -1);
+          const allShell = intermediates.every((n) => lowActivityNodes.has(n));
+
+          if (allShell && intermediates.length >= 1) {
+            chains.push(newPath);
+            intermediates.forEach((n) => shellNodes.add(n));
+          }
+        }
+
+        // Continue BFS if next node is low-activity
+        if (lowActivityNodes.has(neighbor) && newPath.length < 6) {
+          queue.push({ node: neighbor, path: newPath });
+        }
+      }
+    }
+  }
+
+  return { chains, shellNodes };
+}
+
+// ─── 5. SUSPICION SCORING ENGINE ─────────────────────────────────────────────
+// Weighted: Cycle=+40, Fan-in=+30, Fan-out=+30, Shell chain=+35, High velocity=+15
+// Cap at 100. False positive reduction for high-degree legitimate accounts.
+
+function calculateSuspicionScores(
+  accountMap: Map<string, AccountNode>,
+  ringMap: Map<string, string[]>,
+  fanInMap: Map<string, { senders: Set<string> }>,
+  fanOutMap: Map<string, { receivers: Set<string> }>,
+  shellNodes: Set<string>,
+  transactions: RawTransaction[]
+): void {
+  for (const [id, account] of accountMap) {
+    let score = 0;
+    const patterns: string[] = [];
+    const algorithms: string[] = [];
+    const explanations: string[] = [];
+
+    // Cycle participation: +40
+    if (ringMap.has(id)) {
+      score += 40;
+      patterns.push('cycle');
+      algorithms.push('DFS Cycle Detection (Johnson variant)');
+      explanations.push(
+        `Part of ${ringMap.get(id)!.length} fraud ring(s): ${ringMap.get(id)!.join(', ')}`
+      );
+      account.ring_ids = ringMap.get(id)!;
+    }
+
+    // Fan-in: +30
+    if (fanInMap.has(id)) {
+      score += 30;
+      patterns.push('fan_in');
+      algorithms.push('72h Sliding Window Fan-In');
+      explanations.push(
+        `Received from ${fanInMap.get(id)!.senders.size} unique senders within 72h`
+      );
+    }
+
+    // Fan-out: +30
+    if (fanOutMap.has(id)) {
+      score += 30;
+      patterns.push('fan_out');
+      algorithms.push('72h Sliding Window Fan-Out');
+      explanations.push(
+        `Sent to ${fanOutMap.get(id)!.receivers.size} unique receivers within 72h`
+      );
+    }
+
+    // Shell chain: +35
+    if (shellNodes.has(id)) {
+      score += 35;
+      patterns.push('shell_chain');
+      algorithms.push('BFS Shell Chain Detection');
+      explanations.push(
+        `Intermediate node in shell chain with only ${account.total_transactions} total transactions`
+      );
+    }
+
+    // High velocity: +15
+    const accountTxs = transactions.filter(
+      (tx) => tx.sender_id === id || tx.receiver_id === id
+    );
+    if (accountTxs.length > 0) {
+      const timestamps = accountTxs.map((tx) => new Date(tx.timestamp).getTime());
+      const timeSpan = Math.max(...timestamps) - Math.min(...timestamps);
+      const days = Math.max(timeSpan / (1000 * 60 * 60 * 24), 1);
+      const txPerDay = accountTxs.length / days;
+      if (txPerDay > 15) {
+        score += 15;
+        patterns.push('high_velocity');
+        algorithms.push('Transaction Velocity Analysis');
+        explanations.push(
+          `High velocity: ${txPerDay.toFixed(1)} transactions/day`
+        );
+      }
+    }
+
+    // FALSE POSITIVE REDUCTION
+    // If degree > 100, no cycles, consistent intervals -> reduce by 30
+    const totalDegree = account.in_degree + account.out_degree;
+    if (totalDegree > 100 && !ringMap.has(id)) {
+      // Check consistent intervals
+      if (accountTxs.length > 10) {
+        const sorted = accountTxs
+          .map((tx) => new Date(tx.timestamp).getTime())
+          .sort((a, b) => a - b);
+        const intervals: number[] = [];
+        for (let i = 1; i < sorted.length; i++) {
+          intervals.push(sorted[i] - sorted[i - 1]);
+        }
+        const avgInterval =
+          intervals.reduce((a, b) => a + b, 0) / intervals.length;
+        const consistent = intervals.filter(
+          (i) => Math.abs(i - avgInterval) / avgInterval < 0.3
+        );
+        if (consistent.length / intervals.length > 0.6) {
+          score = Math.max(0, score - 30);
+          algorithms.push('False Positive Dampening');
+          explanations.push(
+            `Score reduced by 30: High-degree node (${totalDegree}) with consistent transaction intervals (likely merchant)`
+          );
+        }
+      }
+    }
+
+    // Cap at 100
+    score = Math.min(score, 100);
+
+    account.suspicion_score = score;
+    account.detected_patterns = patterns;
+    account.triggered_algorithms = algorithms;
+    account.explanation = explanations.join('. ');
+    account.is_suspicious = score > 0;
+  }
+}
+
+// ─── BUILD FRAUD RINGS ───────────────────────────────────────────────────────
+
+function buildFraudRings(
+  cycles: string[][],
+  fanInMap: Map<string, { senders: Set<string> }>,
+  fanOutMap: Map<string, { receivers: Set<string> }>,
+  shellChains: string[][],
+  accountMap: Map<string, AccountNode>,
+  transactions: RawTransaction[]
+): FraudRing[] {
+  const rings: FraudRing[] = [];
+  let ringCounter = 0;
+
+  // Cycle rings
+  for (const cycle of cycles) {
+    ringCounter++;
+    const ringId = `RING_${String(ringCounter).padStart(3, '0')}`;
+    const txsInCycle: RawTransaction[] = [];
+    for (let i = 0; i < cycle.length; i++) {
+      const from = cycle[i];
+      const to = cycle[(i + 1) % cycle.length];
+      const matching = transactions.filter(
+        (tx) => tx.sender_id === from && tx.receiver_id === to
+      );
+      txsInCycle.push(...matching);
+    }
+    const totalValue = txsInCycle.reduce((sum, tx) => sum + tx.amount, 0);
+    const avgScore =
+      cycle.reduce(
+        (sum, id) => sum + (accountMap.get(id)?.suspicion_score || 0),
+        0
+      ) / cycle.length;
+
+    rings.push({
+      ring_id: ringId,
+      pattern_type: 'cycle',
+      members: cycle,
+      member_count: cycle.length,
+      risk_score: Math.round(avgScore),
+      total_value: totalValue,
+      explanation: `Cycle of ${cycle.length} accounts: ${cycle.join(' -> ')} -> ${cycle[0]}. Total value: $${totalValue.toLocaleString()}.`,
+    });
+  }
+
+  // Fan-in rings
+  for (const [receiver, data] of fanInMap) {
+    ringCounter++;
+    const ringId = `RING_${String(ringCounter).padStart(3, '0')}`;
+    const members = [receiver, ...data.senders];
+    const avgScore =
+      members.reduce(
+        (sum, id) => sum + (accountMap.get(id)?.suspicion_score || 0),
+        0
+      ) / members.length;
+
+    rings.push({
+      ring_id: ringId,
+      pattern_type: 'fan_in',
+      members,
+      member_count: members.length,
+      risk_score: Math.round(avgScore),
+      total_value: 0,
+      explanation: `Fan-in: ${data.senders.size} unique senders to ${receiver} within 72h.`,
+    });
+  }
+
+  // Fan-out rings
+  for (const [sender, data] of fanOutMap) {
+    ringCounter++;
+    const ringId = `RING_${String(ringCounter).padStart(3, '0')}`;
+    const members = [sender, ...data.receivers];
+    const avgScore =
+      members.reduce(
+        (sum, id) => sum + (accountMap.get(id)?.suspicion_score || 0),
+        0
+      ) / members.length;
+
+    rings.push({
+      ring_id: ringId,
+      pattern_type: 'fan_out',
+      members,
+      member_count: members.length,
+      risk_score: Math.round(avgScore),
+      total_value: 0,
+      explanation: `Fan-out: ${sender} sent to ${data.receivers.size} unique receivers within 72h.`,
+    });
+  }
+
+  // Shell chain rings (deduplicate by unique sets of nodes)
+  const seenShellSets = new Set<string>();
+  for (const chain of shellChains) {
+    const key = [...chain].sort().join(',');
+    if (seenShellSets.has(key)) continue;
+    seenShellSets.add(key);
+
+    ringCounter++;
+    const ringId = `RING_${String(ringCounter).padStart(3, '0')}`;
+    const avgScore =
+      chain.reduce(
+        (sum, id) => sum + (accountMap.get(id)?.suspicion_score || 0),
+        0
+      ) / chain.length;
+
+    rings.push({
+      ring_id: ringId,
+      pattern_type: 'shell_chain',
+      members: chain,
+      member_count: chain.length,
+      risk_score: Math.round(avgScore),
+      total_value: 0,
+      explanation: `Shell chain: ${chain.join(' -> ')}. Intermediate nodes have <= 3 total transactions.`,
+    });
+  }
+
+  // Sort by risk_score descending
+  return rings.sort((a, b) => b.risk_score - a.risk_score);
+}
+
+// ─── BUILD CYTOSCAPE GRAPH DATA ──────────────────────────────────────────────
+
+function buildCytoscapeData(
+  accountMap: Map<string, AccountNode>,
+  transactions: RawTransaction[]
+): CytoscapeGraphData {
+  const nodes = Array.from(accountMap.values()).map((account) => ({
+    data: {
+      id: account.account_id,
+      label: account.account_id,
+      suspicion_score: account.suspicion_score,
+      is_suspicious: account.is_suspicious,
+      detected_patterns: account.detected_patterns,
+      ring_ids: account.ring_ids,
+      in_degree: account.in_degree,
+      out_degree: account.out_degree,
+      total_amount_sent: account.total_amount_sent,
+      total_amount_received: account.total_amount_received,
+      explanation: account.explanation,
+    },
+  }));
+
+  // Aggregate edges
+  const edgeMap = new Map<
+    string,
+    { amount: number; count: number; source: string; target: string }
+  >();
+  for (const tx of transactions) {
+    const key = `${tx.sender_id}->${tx.receiver_id}`;
+    if (!edgeMap.has(key)) {
+      edgeMap.set(key, {
+        amount: 0,
+        count: 0,
+        source: tx.sender_id,
+        target: tx.receiver_id,
+      });
+    }
+    const edge = edgeMap.get(key)!;
+    edge.amount += tx.amount;
+    edge.count++;
+  }
+
+  const edges = Array.from(edgeMap.entries()).map(([key, data]) => ({
+    data: {
+      id: key,
+      source: data.source,
+      target: data.target,
+      amount: Math.round(data.amount * 100) / 100,
+      transaction_count: data.count,
+      label: `$${data.amount.toLocaleString()} (${data.count}x)`,
+    },
+  }));
+
+  return { nodes, edges };
+}
+
+// ─── MAIN ANALYSIS FUNCTION ──────────────────────────────────────────────────
+
+export function analyzeTransactions(
+  transactions: RawTransaction[]
+): AnalysisResult {
+  const startTime = performance.now();
+
+  // Build adjacency list - O(T)
+  const graph = buildAdjacencyList(transactions);
+  const allNodes = Array.from(graph.keys());
+
+  // Build account map - O(T)
+  const accountMap = new Map<string, AccountNode>();
+  for (const nodeId of allNodes) {
+    accountMap.set(nodeId, {
+      account_id: nodeId,
+      total_transactions: 0,
+      in_degree: 0,
+      out_degree: 0,
+      total_amount_sent: 0,
+      total_amount_received: 0,
+      suspicion_score: 0,
+      detected_patterns: [],
+      ring_ids: [],
+      triggered_algorithms: [],
+      explanation: '',
+      is_suspicious: false,
+    });
+  }
+
+  // Compute per-node metrics - O(T)
+  for (const tx of transactions) {
+    const sender = accountMap.get(tx.sender_id)!;
+    sender.total_transactions++;
+    sender.total_amount_sent += tx.amount;
+
+    const receiver = accountMap.get(tx.receiver_id)!;
+    receiver.total_transactions++;
+    receiver.total_amount_received += tx.amount;
+  }
+
+  // Compute degrees - O(V + E)
+  for (const [nodeId, neighbors] of graph) {
+    const account = accountMap.get(nodeId)!;
+    account.out_degree = neighbors.size;
+  }
+  for (const [, neighbors] of graph) {
+    for (const [target] of neighbors) {
+      const account = accountMap.get(target)!;
+      account.in_degree++;
+    }
+  }
+
+  // Run detection algorithms
+  const { cycles, ringMap } = detectCycles(graph, allNodes);
+  const fanInMap = detectFanIn(transactions, allNodes);
+  const fanOutMap = detectFanOut(transactions, allNodes);
+  const { chains: shellChains, shellNodes } = detectShellChains(
+    graph,
+    accountMap,
+    transactions
+  );
+
+  // Calculate suspicion scores
+  calculateSuspicionScores(
+    accountMap,
+    ringMap,
+    fanInMap,
+    fanOutMap,
+    shellNodes,
+    transactions
+  );
+
+  // Build fraud rings
+  const fraudRings = buildFraudRings(
+    cycles,
+    fanInMap,
+    fanOutMap,
+    shellChains,
+    accountMap,
+    transactions
+  );
+
+  // Update ring_ids on accounts from fraudRings
+  for (const ring of fraudRings) {
+    for (const memberId of ring.members) {
+      const account = accountMap.get(memberId);
+      if (account && !account.ring_ids.includes(ring.ring_id)) {
+        account.ring_ids.push(ring.ring_id);
+      }
+    }
+  }
+
+  // Build Cytoscape data
+  const graphData = buildCytoscapeData(accountMap, transactions);
+
+  const endTime = performance.now();
+  const processingTime =
+    Math.round(((endTime - startTime) / 1000) * 1000) / 1000;
+
+  // Sort accounts by suspicion_score descending
+  const accounts = Array.from(accountMap.values()).sort(
+    (a, b) => b.suspicion_score - a.suspicion_score
+  );
+
+  // Build strict hackathon JSON output
+  const suspiciousAccounts = accounts
+    .filter((a) => a.suspicion_score > 0)
+    .map((a) => ({
+      account_id: a.account_id,
+      suspicion_score: a.suspicion_score,
+      detected_patterns: a.detected_patterns,
+      ring_ids: a.ring_ids,
+      triggered_algorithms: a.triggered_algorithms,
+      explanation: a.explanation,
+    }));
+
+  const hackathonOutput: HackathonOutput = {
+    suspicious_accounts: suspiciousAccounts,
+    fraud_rings: fraudRings.map((r) => ({
+      ring_id: r.ring_id,
+      pattern_type: r.pattern_type,
+      members: r.members,
+      member_count: r.member_count,
+      risk_score: r.risk_score,
+    })),
+    summary: {
+      total_accounts: accounts.length,
+      total_transactions: transactions.length,
+      total_suspicious_accounts: suspiciousAccounts.length,
+      total_fraud_rings: fraudRings.length,
+      processing_time_seconds: processingTime,
+    },
+  };
+
+  return {
+    accounts,
+    transactions,
+    fraudRings,
+    summary: hackathonOutput.summary,
+    hackathonOutput,
+    graphData,
+  };
+}

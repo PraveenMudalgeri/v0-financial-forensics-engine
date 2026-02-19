@@ -1,139 +1,145 @@
-// Sample data generator for demonstration
+// Sample data generator for RIFT 2026 hackathon
+// Generates transactions that trigger all detection patterns:
+// cycles (3-5), fan-in (10+ in 72h), fan-out (10+ in 72h), shell chains (3+ hops)
 
-import { Transaction } from './types';
+import { RawTransaction } from './types';
 
-/**
- * Generate sample transaction data with money muling patterns
- */
-export function generateSampleData(): Transaction[] {
-  const transactions: Transaction[] = [];
-  const now = Date.now();
-  const day = 24 * 60 * 60 * 1000;
+function ts(daysAgo: number, hoursOffset = 0): string {
+  const d = new Date();
+  d.setDate(d.getDate() - daysAgo);
+  d.setHours(d.getHours() + hoursOffset);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
 
-  // Scenario 1: Classic ring structure (A -> B -> C -> D -> A)
-  const ring1 = ['ACC001', 'ACC002', 'ACC003', 'ACC004'];
-  for (let i = 0; i < ring1.length; i++) {
-    transactions.push({
-      id: `TX${transactions.length + 1}`,
-      from: ring1[i],
-      to: ring1[(i + 1) % ring1.length],
-      amount: 5000 + Math.random() * 500,
-      timestamp: new Date(now - day * (30 - i * 2)).toISOString(),
-      currency: 'USD',
-      description: 'Wire transfer',
-    });
+let txCounter = 0;
+function tx(
+  sender: string,
+  receiver: string,
+  amount: number,
+  timestamp: string
+): RawTransaction {
+  txCounter++;
+  return {
+    transaction_id: `TXN_${String(txCounter).padStart(5, '0')}`,
+    sender_id: sender,
+    receiver_id: receiver,
+    amount: Math.round(amount * 100) / 100,
+    timestamp,
+  };
+}
+
+export function generateSampleData(): RawTransaction[] {
+  txCounter = 0;
+  const transactions: RawTransaction[] = [];
+
+  // ── SCENARIO 1: Cycle of length 3 (A->B->C->A) ──
+  transactions.push(tx('ACCT_001', 'ACCT_002', 5000, ts(10, 0)));
+  transactions.push(tx('ACCT_002', 'ACCT_003', 4800, ts(10, 2)));
+  transactions.push(tx('ACCT_003', 'ACCT_001', 4600, ts(10, 4)));
+  // Second rotation
+  transactions.push(tx('ACCT_001', 'ACCT_002', 5200, ts(8, 0)));
+  transactions.push(tx('ACCT_002', 'ACCT_003', 5000, ts(8, 1)));
+  transactions.push(tx('ACCT_003', 'ACCT_001', 4900, ts(8, 3)));
+
+  // ── SCENARIO 2: Cycle of length 4 ──
+  transactions.push(tx('ACCT_010', 'ACCT_011', 8000, ts(12, 0)));
+  transactions.push(tx('ACCT_011', 'ACCT_012', 7500, ts(12, 3)));
+  transactions.push(tx('ACCT_012', 'ACCT_013', 7200, ts(12, 5)));
+  transactions.push(tx('ACCT_013', 'ACCT_010', 7000, ts(12, 8)));
+
+  // ── SCENARIO 3: Cycle of length 5 ──
+  transactions.push(tx('ACCT_020', 'ACCT_021', 3000, ts(15, 0)));
+  transactions.push(tx('ACCT_021', 'ACCT_022', 2900, ts(15, 1)));
+  transactions.push(tx('ACCT_022', 'ACCT_023', 2800, ts(15, 2)));
+  transactions.push(tx('ACCT_023', 'ACCT_024', 2700, ts(15, 3)));
+  transactions.push(tx('ACCT_024', 'ACCT_020', 2600, ts(15, 5)));
+
+  // ── SCENARIO 4: Fan-in (12 senders -> 1 receiver within 72h) ──
+  const fanInTarget = 'ACCT_050';
+  for (let i = 1; i <= 12; i++) {
+    transactions.push(
+      tx(
+        `ACCT_F${String(i).padStart(2, '0')}`,
+        fanInTarget,
+        2000 + Math.random() * 500,
+        ts(5, i * 2) // All within 24h window
+      )
+    );
   }
 
-  // Scenario 2: Money mule (hub pattern - many IN, many OUT)
-  const mule = 'ACC010';
-  const sources = ['ACC011', 'ACC012', 'ACC013', 'ACC014'];
-  const destinations = ['ACC015', 'ACC016', 'ACC017', 'ACC018'];
-
-  sources.forEach((source, i) => {
-    transactions.push({
-      id: `TX${transactions.length + 1}`,
-      from: source,
-      to: mule,
-      amount: 10000,
-      timestamp: new Date(now - day * (25 - i)).toISOString(),
-      currency: 'USD',
-      description: 'Deposit',
-    });
-  });
-
-  destinations.forEach((dest, i) => {
-    transactions.push({
-      id: `TX${transactions.length + 1}`,
-      from: mule,
-      to: dest,
-      amount: 9500,
-      timestamp: new Date(now - day * (25 - i) + 2 * 60 * 60 * 1000).toISOString(), // 2 hours later
-      currency: 'USD',
-      description: 'Wire transfer',
-    });
-  });
-
-  // Scenario 3: Layering pattern (quick succession through multiple accounts)
-  const layer = ['ACC020', 'ACC021', 'ACC022', 'ACC023', 'ACC024'];
-  for (let i = 0; i < layer.length - 1; i++) {
-    transactions.push({
-      id: `TX${transactions.length + 1}`,
-      from: layer[i],
-      to: layer[i + 1],
-      amount: 15000 - i * 500,
-      timestamp: new Date(now - day * 20 + i * 60 * 60 * 1000).toISOString(), // 1 hour apart
-      currency: 'USD',
-      description: 'Transfer',
-    });
+  // ── SCENARIO 5: Fan-out (1 sender -> 11 receivers within 72h) ──
+  const fanOutSource = 'ACCT_060';
+  for (let i = 1; i <= 11; i++) {
+    transactions.push(
+      tx(
+        fanOutSource,
+        `ACCT_R${String(i).padStart(2, '0')}`,
+        1500 + Math.random() * 300,
+        ts(3, i * 3)
+      )
+    );
   }
 
-  // Scenario 4: Structuring (multiple small transactions just under reporting threshold)
-  const structurer = 'ACC030';
-  const targets = ['ACC031', 'ACC032', 'ACC033'];
-  targets.forEach((target, i) => {
-    for (let j = 0; j < 5; j++) {
-      transactions.push({
-        id: `TX${transactions.length + 1}`,
-        from: structurer,
-        to: target,
-        amount: 9000 + Math.random() * 500, // Just under $10k
-        timestamp: new Date(now - day * (15 - i) + j * 2 * 60 * 60 * 1000).toISOString(),
-        currency: 'USD',
-        description: 'Cash deposit',
-      });
-    }
-  });
+  // ── SCENARIO 6: Shell chain (4 hops through low-activity intermediaries) ──
+  // ACCT_070 -> SHELL_01 -> SHELL_02 -> SHELL_03 -> ACCT_075
+  transactions.push(tx('ACCT_070', 'SHELL_01', 15000, ts(7, 0)));
+  transactions.push(tx('SHELL_01', 'SHELL_02', 14500, ts(7, 1)));
+  transactions.push(tx('SHELL_02', 'SHELL_03', 14000, ts(7, 2)));
+  transactions.push(tx('SHELL_03', 'ACCT_075', 13500, ts(7, 4)));
 
-  // Scenario 5: Normal transactions (control group)
-  const normalAccounts = ['ACC100', 'ACC101', 'ACC102', 'ACC103', 'ACC104'];
-  for (let i = 0; i < 20; i++) {
-    const from = normalAccounts[Math.floor(Math.random() * normalAccounts.length)];
-    let to = normalAccounts[Math.floor(Math.random() * normalAccounts.length)];
+  // ── SCENARIO 7: Another shell chain ──
+  transactions.push(tx('ACCT_080', 'SHELL_04', 9000, ts(6, 0)));
+  transactions.push(tx('SHELL_04', 'SHELL_05', 8800, ts(6, 2)));
+  transactions.push(tx('SHELL_05', 'ACCT_085', 8600, ts(6, 4)));
+
+  // ── SCENARIO 8: Normal legitimate accounts (control group) ──
+  const legitimateAccounts = [
+    'LEGIT_01',
+    'LEGIT_02',
+    'LEGIT_03',
+    'LEGIT_04',
+    'LEGIT_05',
+  ];
+  for (let i = 0; i < 30; i++) {
+    const from =
+      legitimateAccounts[Math.floor(Math.random() * legitimateAccounts.length)];
+    let to =
+      legitimateAccounts[Math.floor(Math.random() * legitimateAccounts.length)];
     while (to === from) {
-      to = normalAccounts[Math.floor(Math.random() * normalAccounts.length)];
+      to =
+        legitimateAccounts[
+          Math.floor(Math.random() * legitimateAccounts.length)
+        ];
     }
-
-    transactions.push({
-      id: `TX${transactions.length + 1}`,
-      from,
-      to,
-      amount: Math.random() * 5000 + 500,
-      timestamp: new Date(now - Math.random() * 30 * day).toISOString(),
-      currency: 'USD',
-      description: 'Payment',
-    });
+    transactions.push(
+      tx(from, to, Math.random() * 3000 + 100, ts(Math.random() * 30, Math.random() * 24))
+    );
   }
 
-  // Scenario 6: Another ring with faster velocity
-  const ring2 = ['ACC040', 'ACC041', 'ACC042'];
-  for (let cycle = 0; cycle < 3; cycle++) {
-    for (let i = 0; i < ring2.length; i++) {
-      transactions.push({
-        id: `TX${transactions.length + 1}`,
-        from: ring2[i],
-        to: ring2[(i + 1) % ring2.length],
-        amount: 7500,
-        timestamp: new Date(now - day * (10 - cycle * 2) + i * 30 * 60 * 1000).toISOString(), // 30 min apart
-        currency: 'USD',
-        description: 'Instant transfer',
-      });
-    }
+  // ── SCENARIO 9: Mule pattern (many in -> pass through -> many out) ──
+  const mule = 'MULE_001';
+  for (let i = 1; i <= 6; i++) {
+    transactions.push(
+      tx(`SRC_${String(i).padStart(2, '0')}`, mule, 10000, ts(4, i))
+    );
+  }
+  for (let i = 1; i <= 6; i++) {
+    transactions.push(
+      tx(mule, `DST_${String(i).padStart(2, '0')}`, 9500, ts(4, i + 8))
+    );
   }
 
-  // Scenario 7: Fan-out pattern (one source, many destinations - potential laundering)
-  const source = 'ACC050';
-  const fanOut = ['ACC051', 'ACC052', 'ACC053', 'ACC054', 'ACC055', 'ACC056'];
-  fanOut.forEach((dest, i) => {
-    transactions.push({
-      id: `TX${transactions.length + 1}`,
-      from: source,
-      to: dest,
-      amount: 5000,
-      timestamp: new Date(now - day * 8 + i * 15 * 60 * 1000).toISOString(),
-      currency: 'USD',
-      description: 'Distribution',
-    });
-  });
+  // ── SCENARIO 10: Complex cycle with fan-out ──
+  transactions.push(tx('CMPLX_01', 'CMPLX_02', 6000, ts(9, 0)));
+  transactions.push(tx('CMPLX_02', 'CMPLX_03', 5800, ts(9, 1)));
+  transactions.push(tx('CMPLX_03', 'CMPLX_01', 5500, ts(9, 3)));
+  // CMPLX_02 also fans out
+  for (let i = 1; i <= 5; i++) {
+    transactions.push(
+      tx('CMPLX_02', `CMPLX_OUT_${i}`, 1000, ts(9, i + 4))
+    );
+  }
 
   return transactions;
 }

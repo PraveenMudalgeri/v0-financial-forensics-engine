@@ -1,326 +1,403 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { Account, Transaction, NetworkNode, NetworkLink } from '@/lib/types';
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { CytoscapeGraphData, FraudRing } from '@/lib/types';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 
 interface NetworkGraphProps {
-  accounts: Account[];
-  transactions: Transaction[];
+  graphData: CytoscapeGraphData;
+  fraudRings: FraudRing[];
   highlightedNodes?: string[];
   onNodeClick?: (accountId: string) => void;
 }
 
-export function NetworkGraph({ 
-  accounts, 
-  transactions, 
+// Ring color palette for distinct ring highlighting
+const RING_COLORS = [
+  '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4',
+  '#8b5cf6', '#ec4899', '#f43f5e', '#14b8a6', '#a855f7',
+];
+
+export function NetworkGraph({
+  graphData,
+  fraudRings,
   highlightedNodes = [],
-  onNodeClick 
+  onNodeClick,
 }: NetworkGraphProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [hoveredNode, setHoveredNode] = useState<NetworkNode | null>(null);
-  const [nodes, setNodes] = useState<NetworkNode[]>([]);
-  const [links, setLinks] = useState<NetworkLink[]>([]);
-  const animationRef = useRef<number>();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const cyRef = useRef<any>(null);
+  const [hoveredNode, setHoveredNode] = useState<any>(null);
+  const [pinnedNode, setPinnedNode] = useState<any>(null);
+  const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
 
-  useEffect(() => {
-    // Build network data
-    const nodeMap = new Map<string, NetworkNode>();
-    const linkMap = new Map<string, { value: number; count: number }>();
+  // Build ring color map
+  const ringColorMap = new Map<string, string>();
+  fraudRings.forEach((ring, idx) => {
+    ringColorMap.set(ring.ring_id, RING_COLORS[idx % RING_COLORS.length]);
+  });
 
-    accounts.forEach((account) => {
-      nodeMap.set(account.id, {
-        ...account,
-        x: Math.random() * 800,
-        y: Math.random() * 600,
-        vx: 0,
-        vy: 0,
-      });
-    });
-
-    transactions.forEach((tx) => {
-      const key = `${tx.from}-${tx.to}`;
-      if (!linkMap.has(key)) {
-        linkMap.set(key, { value: 0, count: 0 });
-      }
-      const link = linkMap.get(key)!;
-      link.value += tx.amount;
-      link.count++;
-    });
-
-    const networkNodes = Array.from(nodeMap.values());
-    const networkLinks: NetworkLink[] = [];
-
-    linkMap.forEach((data, key) => {
-      const [source, target] = key.split('-');
-      if (nodeMap.has(source) && nodeMap.has(target)) {
-        networkLinks.push({
-          source,
-          target,
-          value: data.value,
-          transactionCount: data.count,
-        });
+  // Build node-to-ring mapping for coloring
+  const nodeRingColors = new Map<string, string>();
+  fraudRings.forEach((ring, idx) => {
+    const color = RING_COLORS[idx % RING_COLORS.length];
+    ring.members.forEach((member) => {
+      if (!nodeRingColors.has(member)) {
+        nodeRingColors.set(member, color);
       }
     });
+  });
 
-    setNodes(networkNodes);
-    setLinks(networkLinks);
-  }, [accounts, transactions]);
+  const initCytoscape = useCallback(async () => {
+    if (!containerRef.current || graphData.nodes.length === 0) return;
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const cytoscape = (await import('cytoscape')).default;
 
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const width = canvas.width;
-    const height = canvas.height;
-
-    // Force simulation
-    const simulate = () => {
-      // Apply forces
-      nodes.forEach((node) => {
-        // Center force
-        node.vx = ((node.vx || 0) + (width / 2 - (node.x || 0)) * 0.001);
-        node.vy = ((node.vy || 0) + (height / 2 - (node.y || 0)) * 0.001);
-
-        // Repulsion between nodes
-        nodes.forEach((other) => {
-          if (node.id === other.id) return;
-          const dx = (node.x || 0) - (other.x || 0);
-          const dy = (node.y || 0) - (other.y || 0);
-          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-          const force = 1000 / (dist * dist);
-          node.vx = (node.vx || 0) + (dx / dist) * force;
-          node.vy = (node.vy || 0) + (dy / dist) * force;
-        });
-
-        // Damping
-        node.vx = (node.vx || 0) * 0.8;
-        node.vy = (node.vy || 0) * 0.8;
-
-        // Update position
-        node.x = (node.x || 0) + (node.vx || 0);
-        node.y = (node.y || 0) + (node.vy || 0);
-
-        // Bounds
-        node.x = Math.max(30, Math.min(width - 30, node.x));
-        node.y = Math.max(30, Math.min(height - 30, node.y));
-      });
-
-      // Link forces
-      links.forEach((link) => {
-        const source = nodes.find((n) => n.id === link.source);
-        const target = nodes.find((n) => n.id === link.target);
-        if (!source || !target) return;
-
-        const dx = (target.x || 0) - (source.x || 0);
-        const dy = (target.y || 0) - (source.y || 0);
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const targetDist = 150;
-        const force = (dist - targetDist) * 0.05;
-
-        const fx = (dx / dist) * force;
-        const fy = (dy / dist) * force;
-
-        source.vx = (source.vx || 0) + fx;
-        source.vy = (source.vy || 0) + fy;
-        target.vx = (target.vx || 0) - fx;
-        target.vy = (target.vy || 0) - fy;
-      });
-
-      // Render
-      ctx.clearRect(0, 0, width, height);
-
-      // Draw links
-      links.forEach((link) => {
-        const source = nodes.find((n) => n.id === link.source);
-        const target = nodes.find((n) => n.id === link.target);
-        if (!source || !target) return;
-
-        const value = link.value / 10000;
-        ctx.strokeStyle = `rgba(99, 102, 241, ${Math.min(value, 0.6)})`;
-        ctx.lineWidth = Math.max(1, Math.min(value * 2, 5));
-        ctx.beginPath();
-        ctx.moveTo(source.x || 0, source.y || 0);
-        ctx.lineTo(target.x || 0, target.y || 0);
-        ctx.stroke();
-
-        // Draw arrow
-        const angle = Math.atan2((target.y || 0) - (source.y || 0), (target.x || 0) - (source.x || 0));
-        const arrowSize = 8;
-        const arrowX = (target.x || 0) - Math.cos(angle) * 15;
-        const arrowY = (target.y || 0) - Math.sin(angle) * 15;
-
-        ctx.fillStyle = `rgba(99, 102, 241, ${Math.min(value, 0.6)})`;
-        ctx.beginPath();
-        ctx.moveTo(arrowX, arrowY);
-        ctx.lineTo(
-          arrowX - arrowSize * Math.cos(angle - Math.PI / 6),
-          arrowY - arrowSize * Math.sin(angle - Math.PI / 6)
-        );
-        ctx.lineTo(
-          arrowX - arrowSize * Math.cos(angle + Math.PI / 6),
-          arrowY - arrowSize * Math.sin(angle + Math.PI / 6)
-        );
-        ctx.closePath();
-        ctx.fill();
-      });
-
-      // Draw nodes
-      nodes.forEach((node) => {
-        const radius = 8 + node.riskScore * 8;
-        const isHighlighted = highlightedNodes.includes(node.id);
-        const isHovered = hoveredNode?.id === node.id;
-
-        // Node circle
-        ctx.beginPath();
-        ctx.arc(node.x || 0, node.y || 0, radius, 0, Math.PI * 2);
-        
-        if (node.isMule) {
-          ctx.fillStyle = '#ef4444';
-        } else if (node.riskScore > 0.7) {
-          ctx.fillStyle = '#f59e0b';
-        } else if (node.riskScore > 0.4) {
-          ctx.fillStyle = '#eab308';
-        } else {
-          ctx.fillStyle = '#6366f1';
-        }
-
-        if (isHighlighted) {
-          ctx.shadowColor = '#fbbf24';
-          ctx.shadowBlur = 20;
-        } else if (isHovered) {
-          ctx.shadowColor = '#ffffff';
-          ctx.shadowBlur = 15;
-        }
-
-        ctx.fill();
-        ctx.shadowBlur = 0;
-
-        // Border
-        ctx.strokeStyle = isHighlighted || isHovered ? '#ffffff' : 'rgba(255, 255, 255, 0.5)';
-        ctx.lineWidth = isHighlighted || isHovered ? 3 : 1;
-        ctx.stroke();
-
-        // Label
-        if (isHighlighted || isHovered || node.isMule) {
-          ctx.fillStyle = '#ffffff';
-          ctx.font = '11px Inter, sans-serif';
-          ctx.textAlign = 'center';
-          ctx.fillText(node.id, node.x || 0, (node.y || 0) + radius + 12);
-        }
-      });
-
-      animationRef.current = requestAnimationFrame(simulate);
-    };
-
-    simulate();
-
-    return () => {
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current);
-      }
-    };
-  }, [nodes, links, hoveredNode, highlightedNodes]);
-
-  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    const hovered = nodes.find((node) => {
-      const dx = (node.x || 0) - x;
-      const dy = (node.y || 0) - y;
-      const radius = 8 + node.riskScore * 8;
-      return Math.sqrt(dx * dx + dy * dy) < radius;
-    });
-
-    setHoveredNode(hovered || null);
-  };
-
-  const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (hoveredNode && onNodeClick) {
-      onNodeClick(hoveredNode.id);
+    // Destroy previous instance
+    if (cyRef.current) {
+      cyRef.current.destroy();
     }
-  };
+
+    const elements: any[] = [];
+
+    // Add nodes
+    graphData.nodes.forEach((node) => {
+      const isSuspicious = node.data.is_suspicious;
+      const ringColor = nodeRingColors.get(node.data.id);
+
+      elements.push({
+        group: 'nodes',
+        data: {
+          ...node.data,
+          nodeColor: isSuspicious
+            ? ringColor || '#ef4444'
+            : '#6366f1',
+          nodeSize: isSuspicious
+            ? 30 + Math.min(node.data.suspicion_score / 2, 30)
+            : 20,
+          borderWidth: isSuspicious ? 4 : 2,
+          borderColor: isSuspicious ? '#ffffff' : 'rgba(255,255,255,0.3)',
+        },
+      });
+    });
+
+    // Add edges
+    graphData.edges.forEach((edge) => {
+      elements.push({
+        group: 'edges',
+        data: { ...edge.data },
+      });
+    });
+
+    const cy = cytoscape({
+      container: containerRef.current,
+      elements,
+      style: [
+        {
+          selector: 'node',
+          style: {
+            'background-color': 'data(nodeColor)',
+            label: 'data(label)',
+            width: 'data(nodeSize)',
+            height: 'data(nodeSize)',
+            'font-size': '9px',
+            color: '#e2e8f0',
+            'text-valign': 'bottom',
+            'text-margin-y': 8,
+            'border-width': 'data(borderWidth)',
+            'border-color': 'data(borderColor)',
+            'text-outline-width': 2,
+            'text-outline-color': '#0f1729',
+          } as any,
+        },
+        {
+          selector: 'node[?is_suspicious]',
+          style: {
+            label: 'data(label)',
+            'font-weight': 'bold',
+            'font-size': '10px',
+          },
+        },
+        {
+          selector: 'edge',
+          style: {
+            width: 1.5,
+            'line-color': 'rgba(99, 102, 241, 0.35)',
+            'target-arrow-color': 'rgba(99, 102, 241, 0.5)',
+            'target-arrow-shape': 'triangle',
+            'curve-style': 'bezier',
+            'arrow-scale': 0.8,
+          } as any,
+        },
+        {
+          selector: '.highlighted',
+          style: {
+            'border-color': '#fbbf24',
+            'border-width': 5,
+            'background-color': '#fbbf24',
+            'z-index': 100,
+          },
+        },
+        {
+          selector: '.highlighted-edge',
+          style: {
+            'line-color': '#fbbf24',
+            'target-arrow-color': '#fbbf24',
+            width: 3,
+            'z-index': 100,
+          } as any,
+        },
+      ],
+      layout: {
+        name: 'cose',
+        animate: false,
+        nodeRepulsion: () => 8000,
+        idealEdgeLength: () => 120,
+        gravity: 0.3,
+        numIter: 300,
+        padding: 40,
+      } as any,
+      minZoom: 0.3,
+      maxZoom: 3,
+      wheelSensitivity: 0.3,
+    });
+
+    // Event handlers
+    cy.on('mouseover', 'node', (evt: any) => {
+      const node = evt.target;
+      const pos = node.renderedPosition();
+      setTooltipPos({ x: pos.x, y: pos.y });
+      setHoveredNode(node.data());
+      node.style('border-color', '#ffffff');
+      node.style('border-width', 5);
+      containerRef.current!.style.cursor = 'pointer';
+    });
+
+    cy.on('mouseout', 'node', (evt: any) => {
+      const node = evt.target;
+      if (!pinnedNode || pinnedNode.id !== node.data().id) {
+        setHoveredNode(null);
+        node.style('border-color', node.data().borderColor);
+        node.style('border-width', node.data().borderWidth);
+      }
+      containerRef.current!.style.cursor = 'default';
+    });
+
+    cy.on('tap', 'node', (evt: any) => {
+      const nodeData = evt.target.data();
+      setPinnedNode(nodeData);
+      setHoveredNode(nodeData);
+      const pos = evt.target.renderedPosition();
+      setTooltipPos({ x: pos.x, y: pos.y });
+      if (onNodeClick) onNodeClick(nodeData.id);
+    });
+
+    cy.on('tap', (evt: any) => {
+      if (evt.target === cy) {
+        setPinnedNode(null);
+        setHoveredNode(null);
+      }
+    });
+
+    cyRef.current = cy;
+  }, [graphData, nodeRingColors, onNodeClick, pinnedNode]);
+
+  useEffect(() => {
+    initCytoscape();
+    return () => {
+      if (cyRef.current) {
+        cyRef.current.destroy();
+        cyRef.current = null;
+      }
+    };
+  }, [initCytoscape]);
+
+  // Highlight nodes when selection changes
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+
+    cy.elements().removeClass('highlighted highlighted-edge');
+
+    if (highlightedNodes.length > 0) {
+      highlightedNodes.forEach((nodeId) => {
+        cy.getElementById(nodeId).addClass('highlighted');
+      });
+
+      // Highlight edges between highlighted nodes
+      cy.edges().forEach((edge: any) => {
+        const src = edge.source().id();
+        const tgt = edge.target().id();
+        if (highlightedNodes.includes(src) && highlightedNodes.includes(tgt)) {
+          edge.addClass('highlighted-edge');
+        }
+      });
+    }
+  }, [highlightedNodes]);
+
+  const displayNode = pinnedNode || hoveredNode;
 
   return (
     <div className="relative">
-      <canvas
-        ref={canvasRef}
-        width={1200}
-        height={700}
-        className="w-full border border-border rounded-lg bg-card cursor-pointer"
-        onMouseMove={handleMouseMove}
-        onClick={handleClick}
-        style={{ maxWidth: '100%', height: 'auto' }}
+      <div
+        ref={containerRef}
+        className="w-full border border-border rounded-lg bg-[#0a0e1a]"
+        style={{ height: '600px' }}
       />
-      {hoveredNode && (
-        <Card className="absolute top-4 left-4 p-4 bg-card/95 backdrop-blur-sm shadow-lg min-w-[250px]">
-          <div className="space-y-2">
+
+      {/* Tooltip / Info panel */}
+      {displayNode && (
+        <Card className="absolute top-4 right-4 p-4 bg-card/95 backdrop-blur-sm shadow-xl min-w-[280px] max-w-[320px] border-border z-50">
+          <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <span className="font-mono text-sm font-semibold">{hoveredNode.id}</span>
-              {hoveredNode.isMule && (
-                <Badge variant="destructive" className="text-xs">MULE</Badge>
+              <span className="font-mono text-sm font-semibold text-foreground">
+                {displayNode.id}
+              </span>
+              {displayNode.is_suspicious && (
+                <Badge variant="destructive" className="text-xs">
+                  SUSPICIOUS
+                </Badge>
               )}
             </div>
-            <div className="space-y-1 text-xs">
+
+            {/* Suspicion Score */}
+            <div>
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-muted-foreground">Suspicion Score</span>
+                <span
+                  className="font-bold font-mono"
+                  style={{
+                    color:
+                      displayNode.suspicion_score > 70
+                        ? '#ef4444'
+                        : displayNode.suspicion_score > 30
+                        ? '#f59e0b'
+                        : '#22c55e',
+                  }}
+                >
+                  {displayNode.suspicion_score}/100
+                </span>
+              </div>
+              <div className="h-2 bg-muted rounded-full overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all"
+                  style={{
+                    width: `${displayNode.suspicion_score}%`,
+                    backgroundColor:
+                      displayNode.suspicion_score > 70
+                        ? '#ef4444'
+                        : displayNode.suspicion_score > 30
+                        ? '#f59e0b'
+                        : '#22c55e',
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Detected Patterns */}
+            {displayNode.detected_patterns?.length > 0 && (
+              <div>
+                <span className="text-xs text-muted-foreground block mb-1">
+                  Detected Patterns
+                </span>
+                <div className="flex flex-wrap gap-1">
+                  {displayNode.detected_patterns.map((p: string) => (
+                    <Badge key={p} variant="secondary" className="text-xs">
+                      {p}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Ring IDs */}
+            {displayNode.ring_ids?.length > 0 && (
+              <div>
+                <span className="text-xs text-muted-foreground block mb-1">
+                  Ring IDs
+                </span>
+                <div className="flex flex-wrap gap-1">
+                  {displayNode.ring_ids.map((r: string) => (
+                    <Badge
+                      key={r}
+                      className="text-xs"
+                      style={{
+                        backgroundColor: ringColorMap.get(r) || '#6366f1',
+                        color: '#fff',
+                      }}
+                    >
+                      {r}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Stats */}
+            <div className="text-xs space-y-1 pt-2 border-t border-border">
               <div className="flex justify-between">
-                <span className="text-muted-foreground">Risk Score:</span>
-                <span className="font-semibold" style={{
-                  color: hoveredNode.riskScore > 0.7 ? '#ef4444' : 
-                         hoveredNode.riskScore > 0.4 ? '#f59e0b' : '#22c55e'
-                }}>
-                  {(hoveredNode.riskScore * 100).toFixed(0)}%
+                <span className="text-muted-foreground">In-Degree</span>
+                <span className="font-mono text-foreground">{displayNode.in_degree}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Out-Degree</span>
+                <span className="font-mono text-foreground">{displayNode.out_degree}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Total Sent</span>
+                <span className="font-mono text-foreground">
+                  ${displayNode.total_amount_sent?.toLocaleString() || '0'}
                 </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-muted-foreground">Total In:</span>
-                <span className="font-mono">${hoveredNode.totalIn.toLocaleString()}</span>
+                <span className="text-muted-foreground">Total Received</span>
+                <span className="font-mono text-foreground">
+                  ${displayNode.total_amount_received?.toLocaleString() || '0'}
+                </span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Total Out:</span>
-                <span className="font-mono">${hoveredNode.totalOut.toLocaleString()}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Transactions:</span>
-                <span className="font-mono">{hoveredNode.transactionCount}</span>
-              </div>
-              {hoveredNode.totalIn > 0 && (
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Pass-through:</span>
-                  <span className="font-mono">
-                    {((hoveredNode.totalOut / hoveredNode.totalIn) * 100).toFixed(0)}%
-                  </span>
-                </div>
-              )}
             </div>
+
+            {/* Explanation */}
+            {displayNode.explanation && (
+              <div className="pt-2 border-t border-border">
+                <span className="text-xs text-muted-foreground block mb-1">
+                  Explanation
+                </span>
+                <p className="text-xs text-foreground leading-relaxed">
+                  {displayNode.explanation}
+                </p>
+              </div>
+            )}
+
+            {pinnedNode && (
+              <p className="text-xs text-muted-foreground italic">
+                Click background to dismiss
+              </p>
+            )}
           </div>
         </Card>
       )}
-      <div className="mt-4 flex gap-4 text-xs">
+
+      {/* Legend */}
+      <div className="mt-4 flex flex-wrap gap-4 text-xs">
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded-full bg-[#ef4444]" />
-          <span className="text-muted-foreground">Confirmed Mule</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-3 h-3 rounded-full bg-[#f59e0b]" />
-          <span className="text-muted-foreground">High Risk</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-3 h-3 rounded-full bg-[#eab308]" />
-          <span className="text-muted-foreground">Medium Risk</span>
+          <span className="text-muted-foreground">Suspicious</span>
         </div>
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded-full bg-[#6366f1]" />
-          <span className="text-muted-foreground">Low Risk</span>
+          <span className="text-muted-foreground">Normal</span>
         </div>
+        {fraudRings.slice(0, 5).map((ring, idx) => (
+          <div key={ring.ring_id} className="flex items-center gap-2">
+            <div
+              className="w-3 h-3 rounded-full"
+              style={{ backgroundColor: RING_COLORS[idx % RING_COLORS.length] }}
+            />
+            <span className="text-muted-foreground">
+              {ring.ring_id} ({ring.pattern_type})
+            </span>
+          </div>
+        ))}
       </div>
     </div>
   );
